@@ -19,32 +19,40 @@
 #include "threads/vaddr.h"
 //added to use malloc!
 #include "threads/malloc.h"
+//added to use lock!
+#include "threads/synch.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-static void parse_and_push_args(const char *cmdline, void **esp);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *cmd_line) 
 {
-  char *fn_copy;
+  char *fn_copy, *fn_copy2, *file_name = NULL, *save_ptr = NULL;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  fn_copy2= palloc_get_page (0);
+  if (fn_copy == NULL || fn_copy2 == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (fn_copy, cmd_line, PGSIZE);
+
+  /* To name the thread correctly, parse file name from command line. */
+  strlcpy (fn_copy2, cmd_line, PGSIZE);
+  file_name = strtok_r(fn_copy2, " \t\r\n", &save_ptr);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+  palloc_free_page(fn_copy2);
   return tid;
 }
 
@@ -89,10 +97,53 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  while(1);
-  return -1;
+	struct list_elem *iter, *target;
+	struct thread *me = thread_current(), *waiting_for = NULL;
+	struct child *child = NULL;
+	bool found = false;
+	int exit_code = 0;
+
+	if (child_tid == TID_ERROR) return -1;
+
+	/*
+	printf("my name is %s(%d)\n", thread_current()->name, thread_current()->tid);
+	*/
+	for (iter = list_begin(&me -> children); iter != list_end(&me -> children); iter = list_next(iter)) {
+		child = list_entry(iter, struct child, elem);
+		/*
+		printf("child found: %d(%s)\n", thread_from_tid(child->tid)->tid, thread_from_tid(child->tid)->name);
+		*/
+		if (child -> tid == child_tid) {
+			target = iter;
+			found = true;
+			break;
+		}
+	}
+
+	/*
+	printf("process_wait: %s(%p, %d).\n", found ? "found" : "not found", target, child_tid);
+	if (!found) printf("I couldn't find %s(%d)!\n", thread_from_tid(child_tid) -> name, thread_from_tid(child_tid)->tid);
+	*/
+	if (!found || child_tid == me -> waiting_for) return -1;
+	
+	struct lock dummy_lock;
+	lock_init(&dummy_lock);
+
+	waiting_for = thread_from_tid(child_tid);
+	if (waiting_for && waiting_for -> is_alive) {
+		me -> waiting_for = child_tid;
+		intr_disable();
+		thread_block();
+	}
+
+	if (waiting_for == NULL) exit_code = -1;
+	else exit_code = list_entry(iter, struct child, elem) -> exit_code;
+	list_remove(iter);
+	me -> waiting_for = -1;
+
+	return exit_code;
 }
 
 /* Free the current process's resources. */
@@ -202,6 +253,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
+static bool parse_and_push_args(const char *cmdline, void **esp);
 static bool setup_stack (void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
@@ -316,9 +368,12 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   if (!setup_stack (esp))
     goto done;
 
+  /* Parse & push arguments. */
+  if (!parse_and_push_args(cmd_line, esp))
+	  goto done;
+
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
-  parse_and_push_args(cmd_line, esp);
 
   success = true;
 
@@ -330,20 +385,27 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
 
 /* load() helpers. */
 
-static void
+/* Parse arguments from command line, and push them to the stack.
+   returns true if successful, false otherwise.
+   Failing scenarios are:
+   - there're too many arguments that their total length exceeds 4k.
+   - failed to allocate temporary storage using malloc(). */
+static bool
 parse_and_push_args (const char *cmdline, void **esp)
 {
-	char *cmdline_bak = malloc(strlen(cmdline)+1), *token = NULL, *save_ptr = NULL,
+	char *cmdline_bak = malloc(strlen(cmdline)+1), *token = NULL, *save_ptr = NULL, // for strtok_r()
 		 *stack_ptr = *esp, **argv[2] = {NULL, NULL};
+
 	int argc = 0, i, tok_len = 0, tot_len = 0, prv = 0, cur = 1, align_len = 0;
 
 	// Make a copy of cmdline to prevent race condition.
+	if (cmdline_bak == NULL) return false;
 	strlcpy(cmdline_bak, cmdline, strlen(cmdline)+1);
 
-	// Parse argv.
+	// Parse argv, uses two-buffers-trick to reallocation of temporary storage.
 	for (token = strtok_r(cmdline_bak, " \r\n\t", &save_ptr); token != NULL; token = strtok_r(NULL, " \r\n\t", &save_ptr)) {
 		if (argv[cur] != NULL) free(argv[cur]);
-		argv[cur] = malloc(sizeof(char*) * ++argc);
+		if ((argv[cur] = malloc(sizeof(char*) * ++argc)) == NULL) return false;
 		if (argv[prv] != NULL) memcpy(argv[cur], argv[prv], (argc-1) * sizeof(char*));
 		argv[cur][argc-1] = token;
 		cur ^= 1;
@@ -353,11 +415,11 @@ parse_and_push_args (const char *cmdline, void **esp)
 	// Push argvs.
 	for (i = argc-1; i >= 0; i--) {
 		tok_len = strlen(argv[prv][i]) + 1;
+		tot_len += tok_len;
+		if (tot_len > 4096) return false;
 		stack_ptr -= tok_len;
 		strlcpy(stack_ptr, argv[prv][i], tok_len);
 		argv[prv][i] = stack_ptr;
-		tot_len += tok_len;
-		//printf("[%s]@%p\n", stack_ptr, stack_ptr);
 	}
 
 	// Word align.
@@ -368,48 +430,38 @@ parse_and_push_args (const char *cmdline, void **esp)
 			*stack_ptr = 0;
 	}
 
-	//printf("%d bytes are used to align(top:%p, %d)\n", align_len, stack_ptr, (char*)*esp - stack_ptr);
-
 	// Append NULL address.
 	stack_ptr -= sizeof(char*);
 	*(long*)stack_ptr = 0L;
-
-	//printf("Null pointer is pushed(top:%p, %d).\n", stack_ptr, (char*)*esp - stack_ptr);
-
 
 	// Append argv addresses.
 	for (i = argc - 1; i >= 0; i--) {
 		stack_ptr -= sizeof(char*);
 		*(long*)stack_ptr = (long)argv[prv][i];
-		//printf("[%p] @ %p : %d\n", *(char**)stack_ptr, stack_ptr, (char*)*esp - stack_ptr);
 	}
 
 
 	// Append **argv.
 	stack_ptr -= sizeof(char*);
 	*(long*)stack_ptr = (long)(stack_ptr + sizeof(char*));
-	//printf("[%p] @ %p : %d\n", *(char***)stack_ptr, stack_ptr, (char*)*esp - stack_ptr);
 
 	// Append argc.
 	stack_ptr -= sizeof(int);
 	*(int*)stack_ptr = (int)(argc);
-	//printf("[%d] @ %p : %d\n", *(int*)stack_ptr, stack_ptr, (char*)*esp - stack_ptr);
 
 
 	// Append NULL address.
 	stack_ptr -= sizeof(char*);
 	*(long*)stack_ptr = 0L;
-	//printf("Null pointer is pushed(top:%p, %d).\n", stack_ptr, (char*)*esp - stack_ptr);
-
-	//hex_dump(stack_ptr, stack_ptr, *(char*)esp - stack_ptr, true);
 
 	// Make esp to refer top of the stack.
 	*esp = stack_ptr;
 
-	// Free every temporary storage.
+	// Free every temporary storage, and return.
 	if (argv[cur] != NULL) free(argv[cur]);
 	if (argv[prv] != NULL) free(argv[prv]);
 	free(cmdline_bak);
+	return true;
 }
 
 static bool install_page (void *upage, void *kpage, bool writable);
