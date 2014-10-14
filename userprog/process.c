@@ -83,6 +83,9 @@ start_process (void *file_name_)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+  if (thread_current() -> parent != NULL) {
+	  lock_acquire(&thread_current() -> parent -> wait_lock);
+  }
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
@@ -132,16 +135,21 @@ process_wait (tid_t child_tid)
 	lock_init(&dummy_lock);
 
 	waiting_for = thread_from_tid(child_tid);
-	if (waiting_for && waiting_for -> is_alive) {
-		me -> waiting_for = child_tid;
-		intr_disable();
-		thread_block();
+	if (waiting_for == NULL) exit_code = -1;
+
+	me -> waiting_for = child_tid;
+	while (waiting_for -> status == THREAD_READY) {
+		lock_acquire(&thread_current()->wait_lock);
+		lock_release(&thread_current()->wait_lock);
 	}
 
-	if (waiting_for == NULL) exit_code = -1;
-	else exit_code = list_entry(iter, struct child, elem) -> exit_code;
-	list_remove(iter);
-	me -> waiting_for = -1;
+	lock_acquire(&me->wait_lock);
+
+	exit_code = list_entry(target, struct child, elem) -> exit_code;
+	list_remove(target);
+	me -> waiting_for = TID_ERROR;
+
+	lock_release(&me->wait_lock);
 
 	return exit_code;
 }
