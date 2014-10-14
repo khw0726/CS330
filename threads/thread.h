@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -80,6 +81,19 @@ typedef int tid_t;
    only because they are mutually exclusive: only a thread in the
    ready state is on the run queue, whereas only a thread in the
    blocked state is on a semaphore wait list. */
+
+/* Since wait() can be called even though the child is dead,
+   It is necessary to conserve child's dying message.
+   To manage children(plural!), list will be used. */
+#ifdef USERPROG
+struct child
+{
+	tid_t tid;
+	int exit_code;
+	struct list_elem elem;
+};
+#endif
+
 struct thread
   {
     /* Owned by thread.c. */
@@ -96,6 +110,17 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+	int exit_code;
+
+	//TODO: fix below:
+	
+	/* for synchronization. */
+	bool is_alive;
+	tid_t waiting_for;
+	/* thread(process) tree. */
+	struct lock wait_lock;
+	struct thread *parent;
+	struct list children;
 #endif
 
     /* Owned by thread.c. */
@@ -125,6 +150,9 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+
+/* Retrieve thread by tid. */
+struct thread *thread_from_tid (tid_t tid);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);

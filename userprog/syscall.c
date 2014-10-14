@@ -21,7 +21,7 @@ static void halt_handler (void);
 static pid_t exec_handler (const char *cmd_line);
 static int wait_handler (pid_t pid);
 static int fibonacci (int n);
-static int sum_of_four_digits (int a, int b, int c, int d);
+static int sum_of_four_integers (int a, int b, int c, int d);
 
 /* Returns true if uaddr is valid user memory.
    this function should called before dereference. */
@@ -110,6 +110,20 @@ syscall_handler (struct intr_frame *f)
 		syscall_return = wait_handler(get_arg(esp, 1, pid_t));
 	} else if (syscall_number == SYS_HALT) {
 		halt_handler();
+	} else if (syscall_number == SYS_FIBO &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, int)) {
+		syscall_return = fibonacci(get_arg(esp, 1, int));
+	} else if (syscall_number == SYS_FOURSUM &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, int) &&
+			is_valid_user_addr(kth(esp, 2)) &&
+			is_user_vaddr_after(esp, 2, int) &&
+			is_valid_user_addr(kth(esp, 3)) &&
+			is_user_vaddr_after(esp, 3, int) &&
+			is_valid_user_addr(kth(esp, 4)) &&
+			is_user_vaddr_after(esp, 4, int)) {
+		syscall_return = sum_of_four_integers(get_arg(esp, 1, int), get_arg(esp, 2, int), get_arg(esp, 3, int), get_arg(esp, 4, int));
 	} else { /* Not implemented call or invalid call. */
 		exit_handler(-1);
 	}
@@ -191,9 +205,11 @@ halt_handler (void)
 	shutdown_power_off();
 }
 
+/* These are not real syscalls.. */
 static int
 fibonacci (int n)
 {
+	// Init p = F_0, q = F_1.
 	int p = 0, q = 1, r;
 
 	while (n --> 0) {
@@ -206,6 +222,7 @@ fibonacci (int n)
 }
 
 static int
-sum_of_four_digits (int a, int b, int c, int d)
+sum_of_four_integers (int a, int b, int c, int d)
 {
+	return a + b + c + d;
 }

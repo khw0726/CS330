@@ -32,6 +32,7 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *cmd_line) 
 {
+  struct file *fp_test = NULL;
   char *fn_copy, *fn_copy2, *file_name = NULL, *save_ptr = NULL;
   tid_t tid;
 
@@ -44,12 +45,18 @@ process_execute (const char *cmd_line)
   strlcpy (fn_copy, cmd_line, PGSIZE);
 
   /* To name the thread correctly, parse file name from command line. */
-  strlcpy (fn_copy2, cmd_line, PGSIZE);
+  strlcpy(fn_copy2, cmd_line, PGSIZE);
   file_name = strtok_r(fn_copy2, " \t\r\n", &save_ptr);
+  fp_test = filesys_open(file_name);
+  if (fp_test == NULL) {
+	  tid = TID_ERROR;
+	  goto done;
+  } else file_close(fp_test);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
 
+done:
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   palloc_free_page(fn_copy2);

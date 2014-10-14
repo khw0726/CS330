@@ -13,6 +13,8 @@
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+//added to use malloc!
+#include "threads/malloc.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -183,6 +185,19 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+#ifdef USERPROG
+  if (t->parent != NULL) {
+	  /*printf("creating thread %p(%d) of name %s.\n", t, t->tid, name);*/
+	  struct child *newborn = malloc(sizeof(*newborn));
+	  newborn -> exit_code = 0;
+	  newborn -> tid = tid;
+	  /*
+	  printf("parent thread is %p(%d) of name %s.\n", t->parent, t->parent->tid, t->parent -> name);
+	  printf("newborn: {%d, %d}\n", newborn->exit_code, newborn->tid);
+	  */
+	  list_push_back(&t->parent->children, &newborn->elem);
+  }
+#endif
 
   /* Prepare thread for first run by initializing its stack.
      Do this atomically so intermediate values for the 'stack' 
@@ -288,10 +303,39 @@ thread_tid (void)
 void
 thread_exit (void) 
 {
+  struct thread *me = thread_current();
+  tid_t myid = thread_current() -> tid;
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
-  process_exit ();
+  {
+	  struct thread *parent = thread_current() -> parent;
+	  struct list_elem *iter;
+	  struct child *self;
+	  if (!list_empty(&me -> children)) {
+		  struct list_elem *item;
+		  while (!list_empty(&me -> children)) {
+			  item = list_remove(list_begin(&me -> children));
+			  free(list_entry(item, struct child, elem));
+		  }
+	  }
+
+	  if (thread_current() -> parent != NULL) {
+		  for (iter = list_begin(&parent->children); iter != list_end(&parent->children); iter = list_next(iter)) {
+			  self = list_entry(iter, struct child, elem);
+			  if (self -> tid == thread_current() -> tid) {
+				  self -> exit_code = thread_current() -> exit_code;
+				  break;
+			  }
+		  }
+	  }
+
+	  process_exit ();
+	  thread_current() -> is_alive = false;
+	  if (parent != NULL && parent -> waiting_for == myid) {
+		  lock_release(&parent->wait_lock);
+	  }
+  }
 #endif
 
   /* Remove thread from all threads list, set our status to dying,
@@ -322,6 +366,18 @@ thread_yield (void)
   intr_set_level (old_level);
 }
 
+struct thread*
+thread_from_tid (tid_t tid)
+{
+	struct list_elem *e;
+
+	for (e = list_begin (&all_list); e != list_end (&all_list);	e = list_next (e)) {
+		struct thread *t = list_entry (e, struct thread, allelem);
+		if (t -> tid == tid) return t;
+	}
+
+	return NULL;
+}
 /* Invoke function 'func' on all threads, passing along 'aux'.
    This function must be called with interrupts off. */
 void
@@ -468,6 +524,21 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+#ifdef USERPROG
+  /* Initialize exit code. */
+  t->exit_code = 0;
+  /* Indicate the thread is alive. */
+  t->is_alive = true;
+  /* I'm currently waiting for no one. */
+  t->waiting_for = -1;
+  /* Initialize process tree. */
+  t->parent = NULL;
+  list_init(&t->children);
+  lock_init(&t->wait_lock);
+  if (!list_empty(&all_list)) {
+	  t->parent = thread_current();
+  }
+#endif
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
 }
