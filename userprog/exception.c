@@ -156,6 +156,10 @@ page_fault (struct intr_frame *f)
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
+
+  // From Pintos Manual, page 28.
+  f -> eip = f -> eax;
+  f -> eax = 0xffffffff;
   kill (f);
 }
 

@@ -17,9 +17,12 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+//added to use malloc!
+#include "threads/malloc.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void parse_and_push_args(const char *cmdline, void **esp);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -88,6 +91,7 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  while(1);
   return -1;
 }
 
@@ -98,6 +102,9 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
+#ifdef USERPROG
+  printf("%s: exit(%d)\n", cur->name, cur->exit_code);
+#endif
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -206,14 +213,18 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *cmd_line, void (**eip) (void), void **esp) 
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
   off_t file_ofset;
   bool success = false;
+  char *copy_line = malloc(strlen(cmd_line)+1), *file_name = NULL, *save = NULL;
   int i;
+
+  strlcpy(copy_line, cmd_line, strlen(cmd_line)+1);
+  file_name = strtok_r(copy_line, " \r\t\n", &save);
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
@@ -307,6 +318,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
+  parse_and_push_args(cmd_line, esp);
 
   success = true;
 
@@ -317,6 +329,88 @@ load (const char *file_name, void (**eip) (void), void **esp)
 }
 
 /* load() helpers. */
+
+static void
+parse_and_push_args (const char *cmdline, void **esp)
+{
+	char *cmdline_bak = malloc(strlen(cmdline)+1), *token = NULL, *save_ptr = NULL,
+		 *stack_ptr = *esp, **argv[2] = {NULL, NULL};
+	int argc = 0, i, tok_len = 0, tot_len = 0, prv = 0, cur = 1, align_len = 0;
+
+	// Make a copy of cmdline to prevent race condition.
+	strlcpy(cmdline_bak, cmdline, strlen(cmdline)+1);
+
+	// Parse argv.
+	for (token = strtok_r(cmdline_bak, " \r\n\t", &save_ptr); token != NULL; token = strtok_r(NULL, " \r\n\t", &save_ptr)) {
+		if (argv[cur] != NULL) free(argv[cur]);
+		argv[cur] = malloc(sizeof(char*) * ++argc);
+		if (argv[prv] != NULL) memcpy(argv[cur], argv[prv], (argc-1) * sizeof(char*));
+		argv[cur][argc-1] = token;
+		cur ^= 1;
+		prv ^= 1;
+	}
+
+	// Push argvs.
+	for (i = argc-1; i >= 0; i--) {
+		tok_len = strlen(argv[prv][i]) + 1;
+		stack_ptr -= tok_len;
+		strlcpy(stack_ptr, argv[prv][i], tok_len);
+		argv[prv][i] = stack_ptr;
+		tot_len += tok_len;
+		//printf("[%s]@%p\n", stack_ptr, stack_ptr);
+	}
+
+	// Word align.
+	align_len = (tot_len % 4 > 0 ? 4 - tot_len % 4 : 0);
+	if (align_len > 0) {
+		stack_ptr -= align_len;
+		for (i = 0; i < align_len; i++)
+			*stack_ptr = 0;
+	}
+
+	//printf("%d bytes are used to align(top:%p, %d)\n", align_len, stack_ptr, (char*)*esp - stack_ptr);
+
+	// Append NULL address.
+	stack_ptr -= sizeof(char*);
+	*(long*)stack_ptr = 0L;
+
+	//printf("Null pointer is pushed(top:%p, %d).\n", stack_ptr, (char*)*esp - stack_ptr);
+
+
+	// Append argv addresses.
+	for (i = argc - 1; i >= 0; i--) {
+		stack_ptr -= sizeof(char*);
+		*(long*)stack_ptr = (long)argv[prv][i];
+		//printf("[%p] @ %p : %d\n", *(char**)stack_ptr, stack_ptr, (char*)*esp - stack_ptr);
+	}
+
+
+	// Append **argv.
+	stack_ptr -= sizeof(char*);
+	*(long*)stack_ptr = (long)(stack_ptr + sizeof(char*));
+	//printf("[%p] @ %p : %d\n", *(char***)stack_ptr, stack_ptr, (char*)*esp - stack_ptr);
+
+	// Append argc.
+	stack_ptr -= sizeof(int);
+	*(int*)stack_ptr = (int)(argc);
+	//printf("[%d] @ %p : %d\n", *(int*)stack_ptr, stack_ptr, (char*)*esp - stack_ptr);
+
+
+	// Append NULL address.
+	stack_ptr -= sizeof(char*);
+	*(long*)stack_ptr = 0L;
+	//printf("Null pointer is pushed(top:%p, %d).\n", stack_ptr, (char*)*esp - stack_ptr);
+
+	//hex_dump(stack_ptr, stack_ptr, *(char*)esp - stack_ptr, true);
+
+	// Make esp to refer top of the stack.
+	*esp = stack_ptr;
+
+	// Free every temporary storage.
+	if (argv[cur] != NULL) free(argv[cur]);
+	if (argv[prv] != NULL) free(argv[prv]);
+	free(cmdline_bak);
+}
 
 static bool install_page (void *upage, void *kpage, bool writable);
 
