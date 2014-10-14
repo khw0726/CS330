@@ -117,14 +117,8 @@ process_wait (tid_t child_tid)
 
 	if (child_tid == TID_ERROR) return -1;
 
-	/*
-	printf("my name is %s(%d)\n", thread_current()->name, thread_current()->tid);
-	*/
 	for (iter = list_begin(&me -> children); iter != list_end(&me -> children); iter = list_next(iter)) {
 		child = list_entry(iter, struct child, elem);
-		/*
-		printf("child found: %d(%s)\n", thread_from_tid(child->tid)->tid, thread_from_tid(child->tid)->name);
-		*/
 		if (child -> tid == child_tid) {
 			target = iter;
 			found = true;
@@ -132,10 +126,6 @@ process_wait (tid_t child_tid)
 		}
 	}
 
-	/*
-	printf("process_wait: %s(%p, %d).\n", found ? "found" : "not found", target, child_tid);
-	if (!found) printf("I couldn't find %s(%d)!\n", thread_from_tid(child_tid) -> name, thread_from_tid(child_tid)->tid);
-	*/
 	if (!found || child_tid == me -> waiting_for) return -1;
 	
 	struct lock dummy_lock;

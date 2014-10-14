@@ -187,14 +187,9 @@ thread_create (const char *name, int priority,
   tid = t->tid = allocate_tid ();
 #ifdef USERPROG
   if (t->parent != NULL) {
-	  /*printf("creating thread %p(%d) of name %s.\n", t, t->tid, name);*/
 	  struct child *newborn = malloc(sizeof(*newborn));
 	  newborn -> exit_code = 0;
 	  newborn -> tid = tid;
-	  /*
-	  printf("parent thread is %p(%d) of name %s.\n", t->parent, t->parent->tid, t->parent -> name);
-	  printf("newborn: {%d, %d}\n", newborn->exit_code, newborn->tid);
-	  */
 	  list_push_back(&t->parent->children, &newborn->elem);
   }
 #endif

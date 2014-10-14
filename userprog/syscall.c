@@ -1,11 +1,14 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "devices/shutdown.h"
 #include "devices/input.h"
+#include "userprog/process.h"
+#include "userprog/pagedir.h"
 typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
@@ -73,7 +76,6 @@ syscall_handler (struct intr_frame *f)
 	char *esp = f -> esp;
 	int syscall_number = -1;
 
-	//printf("esp: %p. this is %s.\n", esp, is_valid_user_addr(esp) ? "valid" : "invalid");
 	if (is_valid_user_addr(esp) &&
 		is_user_vaddr_after(esp, 0, int)) {
 		syscall_number = *(int*)esp;
