@@ -118,9 +118,9 @@ struct thread
 	bool is_alive;
 	tid_t waiting_for;
 	/* thread(process) tree. */
-	struct lock wait_lock;
 	struct thread *parent;
 	struct list children;
+	struct semaphore exec_lock;
 #endif
 
     /* Owned by thread.c. */

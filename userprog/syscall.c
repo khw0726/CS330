@@ -111,7 +111,8 @@ syscall_handler (struct intr_frame *f)
 			is_user_vaddr_after(esp, 1, pid_t)) {
 		syscall_return = wait_handler(get_arg(esp, 1, pid_t));
 	} else if (syscall_number == SYS_HALT) {
-		halt_handler();
+	} else if (syscall_number == SYS_OPEN) {
+		syscall_return = 0; // TODO: IMPLEMENT
 	} else if (syscall_number == SYS_FIBO &&
 			is_valid_user_addr(kth(esp, 1)) &&
 			is_user_vaddr_after(esp, 1, int)) {

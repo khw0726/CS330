@@ -186,10 +186,11 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 #ifdef USERPROG
-  if (t->parent != NULL) {
+  if (is_thread(t->parent)) {
 	  struct child *newborn = malloc(sizeof(*newborn));
 	  newborn -> exit_code = 0;
-	  newborn -> tid = tid;
+	  newborn -> tid = t -> tid;
+	  //printf("I'am a child of %s, I'm %s(%d)!\n", t->parent->name, t->name, t->tid);
 	  list_push_back(&t->parent->children, &newborn->elem);
   }
 #endif
@@ -298,26 +299,24 @@ thread_tid (void)
 void
 thread_exit (void) 
 {
-  struct thread *me = thread_current();
-  tid_t myid = thread_current() -> tid;
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
   {
+	  tid_t myid = thread_current() -> tid;
 	  struct thread *parent = thread_current() -> parent;
-	  struct list_elem *iter;
-	  struct child *self;
-	  if (!list_empty(&me -> children)) {
-		  struct list_elem *item;
-		  while (!list_empty(&me -> children)) {
-			  item = list_remove(list_begin(&me -> children));
+	  if (thread_current() -> is_alive && !list_empty(&thread_current() -> children)) {
+		  struct list_elem *item = NULL;
+		  while (!list_empty(&thread_current() -> children)) {
+			  item = list_pop_front(&thread_current() -> children);
 			  free(list_entry(item, struct child, elem));
 		  }
 	  }
 
-	  if (thread_current() -> parent != NULL) {
+	  if (is_thread(parent)) {
+		  struct list_elem *iter;
 		  for (iter = list_begin(&parent->children); iter != list_end(&parent->children); iter = list_next(iter)) {
-			  self = list_entry(iter, struct child, elem);
+			  struct child *self = list_entry(iter, struct child, elem);
 			  if (self -> tid == thread_current() -> tid) {
 				  self -> exit_code = thread_current() -> exit_code;
 				  break;
@@ -327,8 +326,10 @@ thread_exit (void)
 
 	  process_exit ();
 	  thread_current() -> is_alive = false;
-	  if (parent != NULL && parent -> waiting_for == myid) {
-		  lock_release(&parent->wait_lock);
+	  if (is_thread(parent) &&
+		  parent -> waiting_for == myid &&
+		  parent -> status == THREAD_BLOCKED) {
+		  thread_unblock(parent);
 	  }
   }
 #endif
@@ -529,7 +530,7 @@ init_thread (struct thread *t, const char *name, int priority)
   /* Initialize process tree. */
   t->parent = NULL;
   list_init(&t->children);
-  lock_init(&t->wait_lock);
+  sema_init(&t->exec_lock, 0);
   if (!list_empty(&all_list)) {
 	  t->parent = thread_current();
   }

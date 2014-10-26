@@ -32,7 +32,6 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *cmd_line) 
 {
-  struct file *fp_test = NULL;
   char *fn_copy, *fn_copy2, *file_name = NULL, *save_ptr = NULL;
   tid_t tid;
 
@@ -40,21 +39,28 @@ process_execute (const char *cmd_line)
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   fn_copy2= palloc_get_page (0);
-  if (fn_copy == NULL || fn_copy2 == NULL)
+  if (fn_copy == NULL || fn_copy2 == NULL) {
+	if (fn_copy != NULL) palloc_free_page(fn_copy);
+	if (fn_copy2 != NULL) palloc_free_page(fn_copy2);
     return TID_ERROR;
+  }
+
   strlcpy (fn_copy, cmd_line, PGSIZE);
 
   /* To name the thread correctly, parse file name from command line. */
   strlcpy(fn_copy2, cmd_line, PGSIZE);
   file_name = strtok_r(fn_copy2, " \t\r\n", &save_ptr);
-  fp_test = filesys_open(file_name);
-  if (fp_test == NULL) {
-	  tid = TID_ERROR;
-	  goto done;
-  } else file_close(fp_test);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* Something went wrong while creating.. */
+  if (tid != TID_ERROR) {
+	  sema_down(&thread_from_tid(tid) -> exec_lock);
+	  if (thread_from_tid(tid) -> is_alive == false) {
+		  palloc_free_page(fn_copy2);
+		  return TID_ERROR;
+	  }
+  }
 
 done:
   if (tid == TID_ERROR)
@@ -81,8 +87,12 @@ start_process (void *file_name_)
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
+  if (!success) {
+	thread_current() -> exit_code = -1;
+	thread_current() -> is_alive = false;
+	sema_up(&thread_current() -> exec_lock);
     thread_exit ();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -90,9 +100,7 @@ start_process (void *file_name_)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
-  if (thread_current() -> parent != NULL) {
-	  lock_acquire(&thread_current() -> parent -> wait_lock);
-  }
+  sema_up(&thread_current() -> exec_lock);
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
@@ -109,45 +117,37 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid) 
 {
-	struct list_elem *iter, *target;
+	struct list_elem *iter;
 	struct thread *me = thread_current(), *waiting_for = NULL;
 	struct child *child = NULL;
 	bool found = false;
-	int exit_code = 0;
+	int old_lvl, exit_code = -1;
 
 	if (child_tid == TID_ERROR) return -1;
 
 	for (iter = list_begin(&me -> children); iter != list_end(&me -> children); iter = list_next(iter)) {
 		child = list_entry(iter, struct child, elem);
 		if (child -> tid == child_tid) {
-			target = iter;
 			found = true;
 			break;
 		}
 	}
 
-	if (!found || child_tid == me -> waiting_for) return -1;
+	if (!found) return -1;
 	
-	struct lock dummy_lock;
-	lock_init(&dummy_lock);
-
 	waiting_for = thread_from_tid(child_tid);
 	if (waiting_for == NULL) exit_code = -1;
-
-	me -> waiting_for = child_tid;
-	while (waiting_for -> status == THREAD_READY) {
-		lock_acquire(&thread_current()->wait_lock);
-		lock_release(&thread_current()->wait_lock);
+	else if (waiting_for -> is_alive) {
+		thread_current() -> waiting_for = child_tid;
+		old_lvl = intr_get_level();
+		intr_disable();
+		thread_block();
+		intr_set_level(old_lvl);
 	}
 
-	lock_acquire(&me->wait_lock);
-
-	exit_code = list_entry(target, struct child, elem) -> exit_code;
-	list_remove(target);
-	me -> waiting_for = TID_ERROR;
-
-	lock_release(&me->wait_lock);
-
+	exit_code = child -> exit_code;
+	list_remove(iter);
+	free(child);
 	return exit_code;
 }
 
