@@ -9,6 +9,8 @@
 #include "devices/input.h"
 #include "userprog/process.h"
 #include "userprog/pagedir.h"
+//added to use file_close!
+#include "filesys/file.h"
 typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
@@ -25,6 +27,16 @@ static pid_t exec_handler (const char *cmd_line);
 static int wait_handler (pid_t pid);
 static int fibonacci (int n);
 static int sum_of_four_integers (int a, int b, int c, int d);
+static bool remove_handler (const char *file_name);
+static bool create_handler (const char *file_name, unsigned initial_size);
+static int open_handler (const char *file_name);
+static void close_handler (int fd);
+static int filesize_handler (int fd);
+static void seek_handler (int fd, unsigned position);
+static unsigned tell_handler (int fd);
+
+/* Mutex for file access. */
+static struct lock file_access_lock;
 
 /* Returns true if uaddr is valid user memory.
    this function should called before dereference. */
@@ -37,31 +49,10 @@ is_valid_user_addr (const uint8_t *uaddr)
 	return true;
 }
 
-/* Reads a byte at user virtual address UADDR.
- * UADDR must be below PHYS_BASE.
- * Returns the byte value if successful, -1 if a segfault occured. */
-static int
-get_user (const uint8_t *uaddr)
-{
-	int result;
-	asm ("movl $1f, %0; movzbl %1, %0; 1:" : "=&a" (result) : "m" (*uaddr));
-	return result;
-}
-
-/* Writes BYTE to user address UDST.
- * UDST must be below PHYS_BASE.
- * Returns true if successful, false if a segfault occurred. */
-static bool
-put_user (uint8_t *udst, uint8_t byte)
-{
-	int error_code;
-	asm ("movl $1f, %0; movb %2, %1; 1:" : "=&a" (error_code), "=m" (*udst) : "q" (byte));
-	return error_code != -1;
-}
-
 void
 syscall_init (void) 
 {
+  lock_init(&file_access_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
@@ -86,6 +77,38 @@ syscall_handler (struct intr_frame *f)
 			is_user_vaddr_after(esp, 1, int) &&
 			is_valid_user_addr(kth(esp, 1))) {
 		exit_handler(get_arg(esp, 1, int));
+	} else if (syscall_number == SYS_REMOVE &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, char*)) {
+		syscall_return = remove_handler(get_arg(esp, 1, char*));
+	} else if (syscall_number == SYS_CREATE &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, char*) &&
+			is_valid_user_addr(kth(esp, 2)) &&
+			is_user_vaddr_after(esp, 2, unsigned)) {
+		syscall_return = create_handler(get_arg(esp, 1, char*), get_arg(esp, 2, unsigned));
+	} else if (syscall_number == SYS_OPEN &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, char*)) {
+		syscall_return = open_handler(get_arg(esp, 1, char*));
+	} else if (syscall_number == SYS_CLOSE &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, int)) {
+		close_handler(get_arg(esp, 1, int));
+	} else if (syscall_number == SYS_SEEK &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, int) &&
+			is_valid_user_addr(kth(esp, 2)) &&
+			is_user_vaddr_after(esp, 2, unsigned)) {
+		seek_handler(get_arg(esp, 1, int), get_arg(esp, 2, unsigned));
+	} else if (syscall_number == SYS_TELL &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, int)) {
+		syscall_return = tell_handler(get_arg(esp, 1, int));
+	} else if (syscall_number == SYS_FILESIZE &&
+			is_valid_user_addr(kth(esp, 1)) &&
+			is_user_vaddr_after(esp, 1, int)) {
+		syscall_return = filesize_handler(get_arg(esp, 1, int));
 	} else if (syscall_number == SYS_WRITE &&
 			is_valid_user_addr(kth(esp, 1)) &&
 			is_user_vaddr_after(esp, 1, int) &&
@@ -111,8 +134,7 @@ syscall_handler (struct intr_frame *f)
 			is_user_vaddr_after(esp, 1, pid_t)) {
 		syscall_return = wait_handler(get_arg(esp, 1, pid_t));
 	} else if (syscall_number == SYS_HALT) {
-	} else if (syscall_number == SYS_OPEN) {
-		syscall_return = 0; // TODO: IMPLEMENT
+		halt_handler();
 	} else if (syscall_number == SYS_FIBO &&
 			is_valid_user_addr(kth(esp, 1)) &&
 			is_user_vaddr_after(esp, 1, int)) {
@@ -131,12 +153,141 @@ syscall_handler (struct intr_frame *f)
 		exit_handler(-1);
 	}
 }
+#undef kth
+#undef get_arg
+#undef is_user_vaddr_after
+#undef SYSTEMCALL_HANDLER_LIST
+#undef syscall_return
 
 static void
 exit_handler (int status)
 {
 	thread_current() -> exit_code = status;
 	thread_exit();
+}
+
+static bool
+remove_handler (const char *file_name)
+{
+	if (!is_user_vaddr(file_name) ||
+		!is_valid_user_addr(file_name) ||
+		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0)))
+		exit_handler(-1);
+
+	return filesys_remove(file_name);
+}
+
+static bool
+create_handler (const char *file_name, unsigned initial_size)
+{
+	if (!is_user_vaddr(file_name) ||
+		!is_valid_user_addr(file_name) ||
+		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0)))
+		exit_handler(-1);
+
+	return filesys_create(file_name, initial_size);
+}
+
+#define MAX_FILE_PER_THREAD 32
+static int
+open_handler (const char *file_name)
+{
+	if (!is_user_vaddr(file_name) ||
+		!is_valid_user_addr(file_name) ||
+		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0)))
+		exit_handler(-1);
+
+	struct file *fp = NULL;
+	struct fdesc *new_open = NULL;
+	int new_fd = 0;
+
+	if (list_size(&thread_current() -> files) + 2 >= MAX_FILE_PER_THREAD) {
+		return -1;
+	}
+
+	if ((fp = filesys_open(file_name)) != NULL) {
+		new_open = malloc(sizeof(*new_open));
+		new_open -> file = fp;
+		new_fd = thread_current() -> last_fd++;
+		new_open -> fd = new_fd;
+		list_push_back(&thread_current() -> files, &new_open -> elem);
+		return new_fd;
+	} else {
+		return -1;
+	}
+}
+#undef MAX_FILE_PER_THREAD
+
+/* Function-ize repeated iteration. */
+static struct list_elem *find_file_from_thread(int fd);
+
+static struct list_elem *
+find_file_from_thread(int fd)
+{
+	struct list_elem *iter = NULL;
+	for (iter = list_begin(&thread_current() -> files); iter != list_end(&thread_current() -> files); iter = list_next(iter)) {
+		struct fdesc *entry = list_entry(iter, struct fdesc, elem);
+		if (entry -> fd == fd) return iter;
+	}
+
+	return NULL;
+}
+
+static void
+close_handler (int fd)
+{
+	struct list_elem *iter = NULL;
+	struct fdesc *entry = NULL;
+	/* Do not close invalid(or std-in/out) files! */
+	if (fd < 2) return;
+
+	iter = find_file_from_thread(fd);
+
+	if (iter != NULL) {
+		list_remove(iter);
+		entry = list_entry(iter, struct fdesc, elem);
+		file_close(entry -> file);
+		free(entry);
+	}
+
+	return;
+}
+
+static int
+filesize_handler (int fd)
+{
+	struct list_elem *iter = find_file_from_thread(fd);
+	struct fdesc *entry = NULL;
+	int file_len = 0;
+	if (iter == NULL) return -1;
+
+	entry = list_entry(iter, struct fdesc, elem);
+	lock_acquire(&file_access_lock);
+	file_len = file_length(entry -> file);
+	lock_release(&file_access_lock);
+	return file_len;
+}
+
+static void
+seek_handler (int fd, unsigned position)
+{
+	struct list_elem *iter = find_file_from_thread(fd);
+	struct fdesc *entry = NULL;
+	if (iter == NULL) return;
+
+	entry = list_entry(iter, struct fdesc, elem);
+	file_seek(entry -> file, position);
+}
+
+static unsigned
+tell_handler (int fd)
+{
+	struct list_elem *iter = find_file_from_thread(fd);
+	struct fdesc *entry = NULL;
+	if (iter == NULL) return 0;
+
+	entry = list_entry(iter, struct fdesc, elem);
+	return file_tell(entry -> file);
 }
 
 static int
@@ -152,8 +303,16 @@ write_handler (int fd, const void *buffer, unsigned size)
 		putbuf(buffer, size);
 		bytes_written = size;
 	} else {
-		/* Not implemented. */
-		return -1;
+		lock_acquire(&file_access_lock);
+		struct list_elem *iter = find_file_from_thread(fd);
+		struct fdesc *entry = NULL;
+		if (iter == NULL) {
+			lock_release(&file_access_lock);
+			return -1;
+		}
+		entry = list_entry(iter, struct fdesc, elem);
+		bytes_written = file_write(entry->file, buffer, size);
+		lock_release(&file_access_lock);
 	}
 
 	return bytes_written;
@@ -178,8 +337,16 @@ read_handler (int fd, void *buffer, unsigned size)
 			--size;
 		}
 	} else {
-		/* Not implemented. */
-		return -1;
+		lock_acquire(&file_access_lock);
+		struct list_elem *iter = find_file_from_thread(fd);
+		struct fdesc *entry = NULL;
+		if (iter == NULL) {
+			lock_release(&file_access_lock);
+			return -1;
+		}
+		entry = list_entry(iter, struct fdesc, elem);
+		bytes_read = file_read(entry->file, buffer, size);
+		lock_release(&file_access_lock);
 	}
 
 	return bytes_read;

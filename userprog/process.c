@@ -385,6 +385,11 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
  done:
   /* We arrive here whether the load is successful or not. */
   file_close (file);
+  if (success) {
+	  /* Denial of writing on myself. */
+	  t->myself = filesys_open(file_name);
+	  file_deny_write(t->myself);
+  }
   return success;
 }
 

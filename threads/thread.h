@@ -92,6 +92,12 @@ struct child
 	int exit_code;
 	struct list_elem elem;
 };
+
+struct fdesc {
+	int fd;
+	struct file *file;
+	struct list_elem elem;
+};
 #endif
 
 struct thread
@@ -121,6 +127,11 @@ struct thread
 	struct thread *parent;
 	struct list children;
 	struct semaphore exec_lock;
+	/* file, and file descriptors. */
+	struct list files;
+	int last_fd;
+	/* for Read-Only-Executable. */
+	struct file *myself;
 #endif
 
     /* Owned by thread.c. */

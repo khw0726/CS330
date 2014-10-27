@@ -15,6 +15,8 @@
 #include "userprog/process.h"
 //added to use malloc!
 #include "threads/malloc.h"
+//added to use file_close!
+#include "filesys/file.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -305,7 +307,7 @@ thread_exit (void)
   {
 	  tid_t myid = thread_current() -> tid;
 	  struct thread *parent = thread_current() -> parent;
-	  if (thread_current() -> is_alive && !list_empty(&thread_current() -> children)) {
+	  if (!list_empty(&thread_current() -> children)) {
 		  struct list_elem *item = NULL;
 		  while (!list_empty(&thread_current() -> children)) {
 			  item = list_pop_front(&thread_current() -> children);
@@ -324,7 +326,21 @@ thread_exit (void)
 		  }
 	  }
 
+	  if (!list_empty(&thread_current() -> files)) {
+		  struct list_elem *item = NULL;
+		  struct fdesc *entry = NULL;
+		  while (!list_empty(&thread_current() -> files)) {
+			  item = list_pop_front(&thread_current() -> files);
+			  entry = list_entry(item, struct fdesc, elem);
+			  file_close(entry -> file);
+			  free(entry);
+		  }
+	  }
+
 	  process_exit ();
+	  if (thread_current() -> myself != NULL)
+		  file_close(thread_current()->myself);
+
 	  thread_current() -> is_alive = false;
 	  if (is_thread(parent) &&
 		  parent -> waiting_for == myid &&
@@ -534,6 +550,10 @@ init_thread (struct thread *t, const char *name, int priority)
   if (!list_empty(&all_list)) {
 	  t->parent = thread_current();
   }
+  /* Initialize file, file descriptor list. */
+  list_init(&t->files);
+  t->last_fd = 2;
+  t->myself = NULL;
 #endif
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
