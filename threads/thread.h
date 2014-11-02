@@ -100,6 +100,16 @@ struct fdesc {
 };
 #endif
 
+/* For priority donation,
+   save donation records. */
+struct donation
+{
+	void *lock; /* Identified by address of the lock(or semaphore). */
+	tid_t tid;
+	int priority; /* Donated priority. */
+	struct list_elem elem; /* Caution: the list will be ordered list. */
+};
+
 struct thread
   {
     /* Owned by thread.c. */
@@ -113,13 +123,15 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
+	/* For priority donation. */
+	int own_priority; /* my original priority. */
+	struct list donated; /* *Ordered* list of donated priorities. */
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
 	int exit_code;
 
-	//TODO: fix below:
-	
 	/* for synchronization. */
 	bool is_alive;
 	tid_t waiting_for;
@@ -137,6 +149,10 @@ struct thread
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
+
+/* For priority scheduling */
+bool thread_priority_less(const struct list_elem *a, const struct list_elem *b, void *aux);
+bool donation_less(const struct list_elem *a, const struct list_elem *b, void *aux);
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.

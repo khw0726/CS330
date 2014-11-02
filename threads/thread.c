@@ -75,6 +75,25 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+/* Comparison functions for ordered lists. */
+bool
+thread_priority_less(const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+	struct thread *lhs = list_entry(a, struct thread, elem);
+	struct thread *rhs = list_entry(b, struct thread, elem);
+	
+	return (lhs -> priority) > (rhs -> priority);
+}
+
+bool
+donation_less(const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+	struct donation *lhs = list_entry(a, struct donation, elem);
+	struct donation *rhs = list_entry(b, struct donation, elem);
+	
+	return (lhs -> priority) > (rhs -> priority);
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -192,7 +211,6 @@ thread_create (const char *name, int priority,
 	  struct child *newborn = malloc(sizeof(*newborn));
 	  newborn -> exit_code = 0;
 	  newborn -> tid = t -> tid;
-	  //printf("I'am a child of %s, I'm %s(%d)!\n", t->parent->name, t->name, t->tid);
 	  list_push_back(&t->parent->children, &newborn->elem);
   }
 #endif
@@ -221,6 +239,7 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  thread_yield();
 
   return tid;
 }
@@ -258,7 +277,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered(&ready_list, &t->elem, thread_priority_less, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -371,8 +390,9 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread) {
+	list_insert_ordered(&ready_list, &cur->elem, thread_priority_less, NULL);
+  }
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -411,7 +431,18 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  thread_current() -> own_priority = new_priority;
+  thread_current() -> priority = new_priority;
+  if (!list_empty(&thread_current() -> donated)) {
+	  int donated_priority = list_entry(list_begin(&thread_current() -> donated), struct donation, elem) -> priority;
+	  if (donated_priority > thread_current() -> priority)
+		  thread_current() -> priority = donated_priority;
+  }
+
+  if (!list_empty(&ready_list) &&
+	  list_entry(list_begin(&ready_list), struct thread, elem) -> priority > new_priority) {
+	  thread_yield();
+  }
 }
 
 /* Returns the current thread's priority. */
@@ -536,6 +567,8 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->own_priority = priority;
+  list_init(&t->donated);
 #ifdef USERPROG
   /* Initialize exit code. */
   t->exit_code = 0;
