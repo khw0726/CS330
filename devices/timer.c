@@ -7,6 +7,10 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+/* to use malloc() */
+#include "threads/malloc.h"
+/* to use list */
+#include "lib/kernel/list.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -19,6 +23,14 @@
 
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
+
+/* For sleeping threads.. */
+static struct sleeping {
+	int64_t wakeup;
+	struct semaphore lock;
+	struct list_elem elem;
+};
+static struct list sleeping_list;
 
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
@@ -35,6 +47,7 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+  list_init(&sleeping_list);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
@@ -91,9 +104,21 @@ timer_sleep (int64_t ticks)
 {
   int64_t start = timer_ticks ();
 
+  /* Create and initialize new sleeping entry for wakeup. */
+  struct sleeping *sleepy = malloc(sizeof *sleepy);
+  sleepy -> wakeup = start + ticks;
+  sema_init(&sleepy -> lock, 0);
+  list_push_back(&sleeping_list, &sleepy -> elem);
+
+  /* Block this thread until the time.. */
+  sema_down(&sleepy -> lock);
+
+  /* The thread is waking up, remove sleeping entry. */
+  list_remove(&sleepy -> elem);
+  free(sleepy);
+
+  /* Interrupt must be on for concurrency. */
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -170,7 +195,18 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  struct list_elem *e = NULL;
+  struct sleeping  *s = NULL;
+
   ticks++;
+
+  /* Wake up threads. */
+  for (e = list_begin(&sleeping_list); e != list_end(&sleeping_list); e = list_next(e)) {
+	  s = list_entry(e, struct sleeping, elem);
+	  if (s -> wakeup <= ticks)
+		  sema_up(&s -> lock);
+  }
+
   thread_tick ();
 }
 
