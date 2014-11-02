@@ -184,6 +184,37 @@ lock_init (struct lock *lock)
   sema_init (&lock->semaphore, 1);
 }
 
+/* Recurse into MAX_DEPTH to update donated priority. */
+#define MAX_DEPTH 8
+static void update_donation_tree (int depth, struct lock *lock, struct thread *root);
+static void
+update_donation_tree (int depth, struct lock *lock, struct thread *root)
+{
+	if (depth > MAX_DEPTH || lock -> holder == NULL) return;
+
+	/* TODO: think about, and complete below. */
+	/* here, priority changes --> should semaphore-list be rearranged? */
+	/* anyway, such rearrangement can be done by list_sort() :) */
+
+	struct list_elem *e;
+	struct donation *d;
+	for (e = list_begin(&lock -> holder -> donated); e != list_end(&lock -> holder -> donated);
+		 e = list_next(e)) {
+		d = list_entry(e, struct donation, elem);
+		if (d -> tid == root -> tid)
+			d -> priority = root -> priority;
+	}
+
+	/* should recurse more.. */
+	if (lock -> holder -> priority < root -> priority) {
+		lock -> holder -> priority = root -> priority;
+		if (lock -> holder -> blocked_for == NULL) return;
+		update_donation_tree(depth + 1, lock -> holder -> blocked_for, lock -> holder);
+	}
+
+}
+#undef MAX_DEPTH
+
 /* Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -200,6 +231,7 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+
   /* donate my priority to holder. */
   if (lock -> holder != NULL) {
 	  struct donation *giving = malloc(sizeof *giving);
@@ -207,6 +239,10 @@ lock_acquire (struct lock *lock)
 	  giving -> tid = thread_current() -> tid;
 	  giving -> lock = lock;
 	  list_insert_ordered(&lock->holder->donated, &giving->elem, donation_less, NULL);
+	  thread_current() -> blocked_for = lock;
+	  if (thread_current() && thread_current() -> blocked_for)
+		  update_donation_tree(1, thread_current() -> blocked_for, thread_current());
+
 	  if (list_empty(&lock -> holder -> donated) ||
 		  giving -> priority > lock -> holder -> priority) {
 		  lock -> holder -> priority = giving -> priority;
@@ -285,6 +321,7 @@ lock_release (struct lock *lock)
 	  }
   }
 
+  thread_current() -> blocked_for = NULL;
   lock->holder = NULL;
   sema_up (&lock->semaphore);
   if (pri_nxt > thread_get_priority()) thread_yield();

@@ -567,8 +567,10 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
-  t->own_priority = priority;
-  list_init(&t->donated);
+  /* for priority donation */
+  t->own_priority = priority; /* base */
+  list_init(&t->donated); /* donor list */
+  t->blocked_for = NULL; /* the lock I am currently waiting for */
 #ifdef USERPROG
   /* Initialize exit code. */
   t->exit_code = 0;

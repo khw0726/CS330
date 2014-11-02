@@ -126,6 +126,7 @@ struct thread
 	/* For priority donation. */
 	int own_priority; /* my original priority. */
 	struct list donated; /* *Ordered* list of donated priorities. */
+	struct lock *blocked_for; /* the lock I am currently waiting for */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
