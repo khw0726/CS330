@@ -128,6 +128,9 @@ struct thread
 	struct list donated; /* *Ordered* list of donated priorities. */
 	struct lock *blocked_for; /* the lock I am currently waiting for */
 
+	/* For priority aging. */
+	int age;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */

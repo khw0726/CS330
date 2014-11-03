@@ -19,6 +19,9 @@
 #include "filesys/file.h"
 #endif
 
+#ifndef USERPROG
+bool thread_prior_aging;
+#endif
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -140,6 +143,9 @@ thread_start (void)
   sema_down (&start_idle);
 }
 
+
+/* Aging threads to prevent starvation. */
+static void thread_aging(void);
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
@@ -160,7 +166,34 @@ thread_tick (void)
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
     intr_yield_on_return ();
+
+  /* priority aging */
+#ifndef USERPROG
+  if (thread_prior_aging == true) {
+	  thread_current() -> age = 0;
+	  thread_aging();
+  }
+#endif
+
 }
+
+/* Aging threads to prevent starvation. */
+#define AGE_CYCLE 100
+static void
+thread_aging(void)
+{
+	struct list_elem *e;
+	struct thread *t;
+	for (e = list_begin(&ready_list); e != list_end(&ready_list); e = list_next(e)) {
+		t = list_entry(e, struct thread, elem);
+		if (++(t -> age) % AGE_CYCLE == 0) {
+			++(t -> own_priority);
+			if (t -> priority < t -> own_priority)
+				t -> priority = t -> own_priority;
+		}
+	}
+}
+#undef AGE_CYCLE
 
 /* Prints thread statistics. */
 void
@@ -572,6 +605,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->own_priority = priority; /* base */
   list_init(&t->donated); /* donor list */
   t->blocked_for = NULL; /* the lock I am currently waiting for */
+  if (thread_prior_aging == true)
+	  t -> age = 0;
 #ifdef USERPROG
   /* Initialize exit code. */
   t->exit_code = 0;
