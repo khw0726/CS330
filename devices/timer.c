@@ -97,6 +97,18 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+/* To make sleeping_list an ordered list. */
+static bool sleeping_less (struct list_elem *a, struct list_elem *b, void *aux);
+
+static bool
+sleeping_less (struct list_elem *a, struct list_elem *b, void *aux)
+{
+	struct sleeping *lhs = list_entry(a, struct sleeping, elem);
+	struct sleeping *rhs = list_entry(b, struct sleeping, elem);
+
+	return (lhs -> wakeup) < (rhs -> wakeup);
+}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
@@ -108,13 +120,10 @@ timer_sleep (int64_t ticks)
   struct sleeping *sleepy = malloc(sizeof *sleepy);
   sleepy -> wakeup = start + ticks;
   sema_init(&sleepy -> lock, 0);
-  list_push_back(&sleeping_list, &sleepy -> elem);
+  list_insert_ordered(&sleeping_list, &sleepy -> elem, sleeping_less, NULL);
 
   /* Block this thread until the time.. */
   sema_down(&sleepy -> lock);
-
-  /* The thread is waking up, remove sleeping entry. */
-  list_remove(&sleepy -> elem);
   free(sleepy);
 
   /* Interrupt must be on for concurrency. */
@@ -192,23 +201,26 @@ timer_print_stats (void)
 }
 
 /* Timer interrupt handler. */
+#define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
-  struct list_elem *e = NULL;
-  struct sleeping  *s = NULL;
-
   ticks++;
+  thread_tick ();
+
+  if (thread_mlfqs && ticks % TIMER_FREQ == 0)
+	  thread_mlfqs_update(false);
 
   /* Wake up threads. */
-  for (e = list_begin(&sleeping_list); e != list_end(&sleeping_list); e = list_next(e)) {
-	  s = list_entry(e, struct sleeping, elem);
-	  if (s -> wakeup <= ticks)
+  while (!list_empty(&sleeping_list)) {
+	  struct sleeping *s = list_entry(list_front(&sleeping_list), struct sleeping, elem);
+	  if (s -> wakeup <= ticks) {
+		  list_pop_front(&sleeping_list);
 		  sema_up(&s -> lock);
+	  } else break;
   }
-
-  thread_tick ();
 }
+#undef TIME_SLICE
 
 /* Returns true if LOOPS iterations waits for more than one timer
    tick, otherwise false. */

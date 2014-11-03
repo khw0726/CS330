@@ -131,6 +131,10 @@ struct thread
 	/* For priority aging. */
 	int age;
 
+	/* For mlfqs */
+	int nice;
+	int recent_cpu;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -162,6 +166,8 @@ bool donation_less(const struct list_elem *a, const struct list_elem *b, void *a
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
+/* for mlfqs.. */
+void thread_mlfqs_update(bool update_priority_only);
 
 void thread_init (void);
 void thread_start (void);

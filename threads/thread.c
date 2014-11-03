@@ -18,6 +18,10 @@
 //added to use file_close!
 #include "filesys/file.h"
 #endif
+//added to use fixed point arithmetic!
+#include "threads/fixed-point.h"
+//added to use timer_ticks()
+#include "../devices/timer.h"
 
 #ifndef USERPROG
 bool thread_prior_aging;
@@ -65,6 +69,8 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
+/* thread mlfqs */
+int load_average;
 
 static void kernel_thread (thread_func *, void *aux);
 
@@ -124,6 +130,10 @@ thread_init (void)
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  /* mlfqs */
+  if (thread_mlfqs) {
+	  load_average = 0;
+  }
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -163,24 +173,68 @@ thread_tick (void)
   else
     kernel_ticks++;
 
-  /* Enforce preemption. */
-  if (++thread_ticks >= TIME_SLICE)
-    intr_yield_on_return ();
-
   /* priority aging */
 #ifndef USERPROG
   if (thread_prior_aging == true) {
-	  thread_current() -> age = 0;
+	  t -> age = 0;
 	  thread_aging();
   }
 #endif
 
+  /* Enforce preemption. */
+  if (++thread_ticks >= TIME_SLICE)
+    intr_yield_on_return ();
+}
+
+
+/* Iterate over all_list to update recent cpu or priority. */
+static void mlfqs_update_thread (struct thread *t, void *update_priority_only);
+
+static void
+mlfqs_update_thread (struct thread *t, void *update_priority_only)
+{
+	if (t == idle_thread) return;
+
+	if (*(bool*)update_priority_only != true) {
+		int load_avg = load_average,
+			coeff = div_fixed(load_avg * 2, load_avg * 2 + to_fixed(1)),
+			recent_cpu = mul_fixed(coeff, t -> recent_cpu) + to_fixed(t -> nice);
+		t -> recent_cpu = recent_cpu;
+	}
+
+	t -> priority = PRI_MAX - to_int(t -> recent_cpu / 4) - (t -> nice * 2);
+	if (t -> priority < PRI_MIN) t -> priority = PRI_MIN;
+	if (t -> priority > PRI_MAX) t -> priority = PRI_MAX;
+}
+
+void
+thread_mlfqs_update(bool update_priority_only)
+{
+	/* when update_priority_only is..
+	   true : Elapsed TIMER_FREQ ticks.
+	   false: Elapsed TIME_SLICE ticks. */
+
+	int old_level = intr_get_level();
+	intr_disable();
+
+	if (update_priority_only == false) {
+		thread_current() -> recent_cpu += to_fixed(1);
+		int coeff = to_fixed(59) / 60,
+			ready = list_size(&ready_list) + (thread_current() != idle_thread),
+			load_avg = mul_fixed(coeff, load_average) + to_fixed(1) / 60 * ready;
+		load_average = load_avg;
+	}
+
+	thread_foreach(mlfqs_update_thread, &update_priority_only);
+	list_sort(&ready_list, thread_priority_less, NULL);
+
+	intr_set_level(old_level);
 }
 
 /* Aging threads to prevent starvation. */
 #define AGE_CYCLE 100
 static void
-thread_aging(void)
+thread_aging (void)
 {
 	struct list_elem *e;
 	struct thread *t;
@@ -465,17 +519,19 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current() -> own_priority = new_priority;
-  thread_current() -> priority = new_priority;
-  if (!list_empty(&thread_current() -> donated)) {
-	  int donated_priority = list_entry(list_begin(&thread_current() -> donated), struct donation, elem) -> priority;
-	  if (donated_priority > thread_current() -> priority)
-		  thread_current() -> priority = donated_priority;
-  }
+  if (thread_mlfqs != true) {
+	  thread_current() -> own_priority = new_priority;
+	  thread_current() -> priority = new_priority;
+	  if (!list_empty(&thread_current() -> donated)) {
+		  int donated_priority = list_entry(list_begin(&thread_current() -> donated), struct donation, elem) -> priority;
+		  if (donated_priority > thread_current() -> priority)
+			  thread_current() -> priority = donated_priority;
+	  }
 
-  if (!list_empty(&ready_list) &&
-	  list_entry(list_begin(&ready_list), struct thread, elem) -> priority > new_priority) {
-	  thread_yield();
+	  if (!list_empty(&ready_list) &&
+		  list_entry(list_begin(&ready_list), struct thread, elem) -> priority > new_priority) {
+		  thread_yield();
+	  }
   }
 }
 
@@ -483,38 +539,36 @@ thread_set_priority (int new_priority)
 int
 thread_get_priority (void) 
 {
-  return thread_current ()->priority;
+	return thread_current ()->priority;
 }
 
 /* Sets the current thread's nice value to NICE. */
 void
-thread_set_nice (int nice UNUSED) 
+thread_set_nice (int nice) 
 {
-  /* Not yet implemented. */
+	thread_current() -> nice = nice;
+	thread_current() -> priority = PRI_MAX - to_int(to_fixed(thread_current() -> recent_cpu) / 4) - nice * 2;
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+	return thread_current() -> nice;
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+	return to_int(load_average * 100);
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+	return to_int(thread_current() -> recent_cpu * 100);
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -600,13 +654,20 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
-  /* for priority donation */
-  t->own_priority = priority; /* base */
+  if (thread_mlfqs != true) {
+	  t->priority = priority;
+	  /* for priority donation */
+	  t->own_priority = priority; /* base */
+  } else {
+	  t -> recent_cpu = 0;
+	  t -> nice = 0;
+  }
   list_init(&t->donated); /* donor list */
   t->blocked_for = NULL; /* the lock I am currently waiting for */
+#ifndef USERPROG
   if (thread_prior_aging == true)
 	  t -> age = 0;
+#endif
 #ifdef USERPROG
   /* Initialize exit code. */
   t->exit_code = 0;
@@ -685,6 +746,11 @@ thread_schedule_tail (struct thread *prev)
 
   /* Start new time slice. */
   thread_ticks = 0;
+
+  /* thread_mlfqs */
+  if (thread_mlfqs == true) {
+	  //cur -> recent_cpu = 0;
+  }
 
 #ifdef USERPROG
   /* Activate the new address space. */
