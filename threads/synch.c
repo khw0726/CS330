@@ -111,16 +111,22 @@ void
 sema_up (struct semaphore *sema) 
 {
   enum intr_level old_level;
+  int pri_nxt = -1000;
 
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) {
+	list_sort(&sema -> waiters, thread_priority_less, NULL);
+	pri_nxt = list_entry(list_begin(&sema->waiters), struct thread, elem) -> priority;
     thread_unblock (list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem));
   }
   sema->value++;
   intr_set_level (old_level);
+  /* TODO: fix! */
+  /* fail when this is called from an interrupt handler */
+  if (!intr_context() && pri_nxt != -1000) thread_yield();
 }
 
 static void sema_test_helper (void *sema_);
@@ -192,12 +198,8 @@ update_donation_tree (int depth, struct lock *lock, struct thread *root)
 {
 	if (depth > MAX_DEPTH || lock -> holder == NULL) return;
 
-	/* TODO: think about, and complete below. */
-	/* here, priority changes --> should semaphore-list be rearranged? */
-	/* anyway, such rearrangement can be done by list_sort() :) */
-
-	struct list_elem *e;
 	struct donation *d;
+	struct list_elem *e;
 	for (e = list_begin(&lock -> holder -> donated); e != list_end(&lock -> holder -> donated);
 		 e = list_next(e)) {
 		d = list_entry(e, struct donation, elem);
@@ -208,6 +210,7 @@ update_donation_tree (int depth, struct lock *lock, struct thread *root)
 	/* should recurse more.. */
 	if (lock -> holder -> priority < root -> priority) {
 		lock -> holder -> priority = root -> priority;
+		list_sort(&lock -> holder -> donated, donation_less, NULL);
 		if (lock -> holder -> blocked_for == NULL) return;
 		update_donation_tree(depth + 1, lock -> holder -> blocked_for, lock -> holder);
 	}
@@ -251,6 +254,9 @@ lock_acquire (struct lock *lock)
 
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
+  if (thread_current() -> blocked_for == lock) {
+	  thread_current() -> blocked_for = NULL;
+  }
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -321,7 +327,6 @@ lock_release (struct lock *lock)
 	  }
   }
 
-  thread_current() -> blocked_for = NULL;
   lock->holder = NULL;
   sema_up (&lock->semaphore);
   if (pri_nxt > thread_get_priority()) thread_yield();
