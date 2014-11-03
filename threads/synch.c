@@ -73,8 +73,7 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      list_sort(&sema->waiters, thread_priority_less, NULL);
-      list_insert_ordered (&sema->waiters, &thread_current ()->elem, thread_priority_less, NULL);
+      list_push_back (&sema->waiters, &thread_current ()->elem);
       thread_block ();
     }
   sema->value--;
@@ -121,10 +120,11 @@ sema_up (struct semaphore *sema)
 
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) {
-	list_sort(&sema -> waiters, thread_priority_less, NULL);
-	pri_nxt = list_entry(list_begin(&sema->waiters), struct thread, elem) -> priority;
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+	struct list_elem *e = list_min(&sema->waiters, thread_priority_less, NULL);
+	struct thread *t = list_entry (e, struct thread, elem);
+	list_remove(e);
+	pri_nxt = t -> priority;
+    thread_unblock (t);
   }
   sema->value++;
   intr_set_level (old_level);
@@ -308,9 +308,9 @@ lock_release (struct lock *lock)
 					  e != list_end(&thread_current() -> donated); e = list_next(e)) {
 				  found = 0;
 				  d = list_entry(e, struct donation, elem);
-				  tid_nxt = list_entry(list_begin(&(lock->semaphore.waiters)), struct thread, elem) -> tid;
-				  pri_nxt = list_entry(list_begin(&(lock->semaphore.waiters)), struct thread, elem) -> priority;
-				  p = list_entry(list_begin(&(lock->semaphore.waiters)), struct thread, elem);
+				  p = list_entry(list_min(&lock->semaphore.waiters, thread_priority_less, NULL), struct thread, elem);
+				  tid_nxt = p -> tid;
+				  pri_nxt = p -> priority;
 				  if (d -> lock == lock) {
 					  if (p -> tid == d -> tid) {
 						  list_remove(e);

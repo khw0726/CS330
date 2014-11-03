@@ -132,8 +132,8 @@ struct thread
 	int age;
 
 	/* For mlfqs */
-	int nice;
-	int recent_cpu;
+	int64_t nice;
+	int64_t recent_cpu;
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

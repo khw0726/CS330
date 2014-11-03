@@ -11,6 +11,8 @@
 #include "threads/malloc.h"
 /* to use list */
 #include "lib/kernel/list.h"
+/* to use fixed-point arithmetic */
+#include "threads/fixed-point.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -208,8 +210,13 @@ timer_interrupt (struct intr_frame *args UNUSED)
   ticks++;
   thread_tick ();
 
-  if (thread_mlfqs && ticks % TIMER_FREQ == 0)
-	  thread_mlfqs_update(false);
+  if (thread_mlfqs) {
+	  thread_current() -> recent_cpu += to_fixed(1);
+	  if (ticks % TIMER_FREQ == 0)
+		  thread_mlfqs_update(false);
+	  if (ticks % TIME_SLICE == 0)
+		  thread_set_nice(thread_current() -> nice);
+  }
 
   /* Wake up threads. */
   while (!list_empty(&sleeping_list)) {

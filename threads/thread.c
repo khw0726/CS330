@@ -70,7 +70,7 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 /* thread mlfqs */
-int load_average;
+int64_t load_average;
 
 static void kernel_thread (thread_func *, void *aux);
 
@@ -187,47 +187,29 @@ thread_tick (void)
 }
 
 
-/* Iterate over all_list to update recent cpu or priority. */
-static void mlfqs_update_thread (struct thread *t, void *update_priority_only);
-
-static void
-mlfqs_update_thread (struct thread *t, void *update_priority_only)
-{
-	if (t == idle_thread) return;
-
-	if (*(bool*)update_priority_only != true) {
-		int load_avg = load_average,
-			coeff = div_fixed(load_avg * 2, load_avg * 2 + to_fixed(1)),
-			recent_cpu = mul_fixed(coeff, t -> recent_cpu) + to_fixed(t -> nice);
-		t -> recent_cpu = recent_cpu;
-	}
-
-	t -> priority = PRI_MAX - to_int(t -> recent_cpu / 4) - (t -> nice * 2);
-	if (t -> priority < PRI_MIN) t -> priority = PRI_MIN;
-	if (t -> priority > PRI_MAX) t -> priority = PRI_MAX;
-}
-
 void
 thread_mlfqs_update(bool update_priority_only)
 {
-	/* when update_priority_only is..
-	   true : Elapsed TIMER_FREQ ticks.
-	   false: Elapsed TIME_SLICE ticks. */
-
 	int old_level = intr_get_level();
 	intr_disable();
 
-	if (update_priority_only == false) {
-		thread_current() -> recent_cpu += to_fixed(1);
-		int coeff = to_fixed(59) / 60,
+	int64_t coeff = to_fixed(59) / 60,
 			ready = list_size(&ready_list) + (thread_current() != idle_thread),
 			load_avg = mul_fixed(coeff, load_average) + to_fixed(1) / 60 * ready;
-		load_average = load_avg;
+
+	struct list_elem *e;
+	for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+		struct thread *t = list_entry(e, struct thread, allelem);
+		if (t == idle_thread) continue;
+		int64_t coeff = div_fixed(load_average * 2, load_average * 2 + to_fixed(1)),
+				recent_cpu = mul_fixed(coeff, t -> recent_cpu) + to_fixed(t -> nice);
+		t -> recent_cpu = recent_cpu;
+		t -> priority = PRI_MAX - to_int_strict(t -> recent_cpu / 4) - (t -> nice) * 2;
+		if (t -> priority < PRI_MIN) t -> priority = PRI_MIN;
+		if (t -> priority > PRI_MAX) t -> priority = PRI_MAX;
 	}
 
-	thread_foreach(mlfqs_update_thread, &update_priority_only);
-	list_sort(&ready_list, thread_priority_less, NULL);
-
+	load_average = load_avg;
 	intr_set_level(old_level);
 }
 
@@ -364,8 +346,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_sort(&ready_list, thread_priority_less, NULL);
-  list_insert_ordered(&ready_list, &t->elem, thread_priority_less, NULL);
+  list_push_back(&ready_list, &t->elem);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -479,7 +460,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) {
-	list_insert_ordered(&ready_list, &cur->elem, thread_priority_less, NULL);
+	list_push_back(&ready_list, &cur->elem);
   }
   cur->status = THREAD_READY;
   schedule ();
@@ -543,11 +524,14 @@ thread_get_priority (void)
 }
 
 /* Sets the current thread's nice value to NICE. */
+//@@@@@@@@@
 void
 thread_set_nice (int nice) 
 {
 	thread_current() -> nice = nice;
-	thread_current() -> priority = PRI_MAX - to_int(to_fixed(thread_current() -> recent_cpu) / 4) - nice * 2;
+	thread_current() -> priority = to_int_strict(to_fixed(PRI_MAX) - (thread_current() -> recent_cpu / 4) - to_fixed(thread_current() -> nice) * 2);
+	if (thread_current() -> priority < PRI_MIN) thread_current() -> priority = PRI_MIN;
+	if (thread_current() -> priority > PRI_MAX) thread_current() -> priority = PRI_MAX;
 }
 
 /* Returns the current thread's nice value. */
@@ -714,8 +698,12 @@ next_thread_to_run (void)
 {
   if (list_empty (&ready_list))
     return idle_thread;
-  else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  else {
+	  struct list_elem *e = list_min(&ready_list, thread_priority_less, NULL);
+	  struct thread *nxt = list_entry(e, struct thread, elem);
+	  list_remove(e);
+	  return nxt;
+  }
 }
 
 /* Completes a thread switch by activating the new thread's page
@@ -746,11 +734,6 @@ thread_schedule_tail (struct thread *prev)
 
   /* Start new time slice. */
   thread_ticks = 0;
-
-  /* thread_mlfqs */
-  if (thread_mlfqs == true) {
-	  //cur -> recent_cpu = 0;
-  }
 
 #ifdef USERPROG
   /* Activate the new address space. */
