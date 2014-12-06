@@ -212,9 +212,9 @@ timer_interrupt (struct intr_frame *args UNUSED)
 
   if (thread_mlfqs) {
 	  thread_current() -> recent_cpu += to_fixed(1);
-	  if (ticks % TIMER_FREQ == 0)
+	  if (ticks % TIMER_FREQ == 0) // every second.
 		  thread_mlfqs_update(false);
-	  if (ticks % TIME_SLICE == 0)
+	  if (ticks % TIME_SLICE == 0) // update priority of current thread.
 		  thread_set_nice(thread_current() -> nice);
   }
 

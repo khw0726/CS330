@@ -237,6 +237,7 @@ lock_acquire (struct lock *lock)
   ASSERT (!lock_held_by_current_thread (lock));
 
 
+#ifndef USERPROG
   if (thread_mlfqs != true) {
 	  /* donate my priority to holder. */
 	  if (lock -> holder != NULL) {
@@ -255,14 +256,17 @@ lock_acquire (struct lock *lock)
 		  }
 	  }
   }
+#endif
 
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
+#ifndef USERPROG
   if (thread_mlfqs != true) {
 	  if (!intr_context() && thread_current() -> blocked_for == lock) {
 		  thread_current() -> blocked_for = NULL;
 	  }
   }
+#endif
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -297,6 +301,7 @@ lock_release (struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
  
   int pri_nxt = -1000;
+#ifndef USERPROG
   if (thread_mlfqs != true) {
 	  if (!intr_context()) {
 		  int tid_nxt = 0, found = 1;
@@ -334,12 +339,15 @@ lock_release (struct lock *lock)
 		  }
 	  }
   }
+#endif
 
   lock->holder = NULL;
   sema_up (&lock->semaphore);
+#ifndef USERPROG
   if (thread_mlfqs != true) {
 	  if (!intr_context() && pri_nxt > thread_get_priority()) thread_yield();
   }
+#endif
 }
 
 /* Returns true if the current thread holds LOCK, false
