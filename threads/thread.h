@@ -1,6 +1,7 @@
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
+#include <hash.h>
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
@@ -152,6 +153,12 @@ struct thread
 	int last_fd;
 	/* for Read-Only-Executable. */
 	struct file *myself;
+#endif
+
+#ifdef VM
+	uint8_t *esp;
+	struct hash frame_table;
+	struct hash supp_page_table;
 #endif
 
     /* Owned by thread.c. */

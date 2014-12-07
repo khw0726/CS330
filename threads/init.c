@@ -37,6 +37,9 @@
 #include "filesys/filesys.h"
 #include "filesys/fsutil.h"
 #endif
+#ifdef VM
+#include "vm/frame.h"
+#endif
 
 #ifndef USERPROG
 extern bool thread_prior_aging;
@@ -117,6 +120,10 @@ main (void)
 #ifdef USERPROG
   exception_init ();
   syscall_init ();
+#ifdef VM
+  frame_init();
+#endif
+
 #endif
 
   /* Start thread scheduler and enable interrupts. */

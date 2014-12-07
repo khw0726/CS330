@@ -430,6 +430,7 @@ thread_exit (void)
 		  file_close(thread_current()->myself);
 
 	  thread_current() -> is_alive = false;
+	  frame_free_all(&thread_current() -> frame_table);
 	  if (is_thread(parent) &&
 		  parent -> waiting_for == myid &&
 		  parent -> status == THREAD_BLOCKED) {

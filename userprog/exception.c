@@ -4,6 +4,9 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
+#include "vm/frame.h"
+#include "vm/page.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -119,6 +122,7 @@ kill (struct intr_frame *f)
    can find more information about both of these in the
    description of "Interrupt 14--Page Fault Exception (#PF)" in
    [IA32-v3a] section 5.15 "Exception and Interrupt Reference". */
+#define STACK_LIMIT (uint8_t*)((uint8_t*)(PHYS_BASE) - (uint8_t*)(8*1024*1024))
 static void
 page_fault (struct intr_frame *f) 
 {
@@ -148,6 +152,37 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  /*
+  printf ("Page fault at %p: %s error %s page in %s context.\n",
+          fault_addr,
+          not_present ? "not present" : "rights violation",
+          write ? "writing" : "reading",
+          user ? "user" : "kernel");
+  printf("%p(limit:%p), %p(limit:%p)\n", fault_addr, STACK_LIMIT, f -> esp, PHYS_BASE);
+  */
+
+  /* TODO: Make use of supplemenetal page table. */
+
+  /* Stack Growth */
+  if (user && not_present && write &&
+	  fault_addr >= STACK_LIMIT && f->esp >= STACK_LIMIT &&
+	  fault_addr <= PHYS_BASE && f->esp <= PHYS_BASE) {
+	  uint8_t *stack_ptr1= (uint8_t*)(((unsigned)(fault_addr)) / PGSIZE * PGSIZE) + PGSIZE;
+	  uint8_t *stack_ptr2= (uint8_t*)(((unsigned)(f->esp)) / PGSIZE * PGSIZE) + PGSIZE;
+	  uint8_t *stack_ptr = stack_ptr1 > stack_ptr2 ? stack_ptr1 : stack_ptr2;
+
+	  while (stack_ptr > f->esp || stack_ptr > fault_addr) {
+		  stack_ptr -= PGSIZE;
+		  if (frame_find_upage(&thread_current()  -> frame_table, stack_ptr))
+			  continue;
+		  if (frame_get_page(&thread_current()  -> frame_table, stack_ptr, FRM_WRITABLE | FRM_ZERO) == NULL)
+			  break;
+	  }
+	  if (stack_ptr <= f->esp && stack_ptr <= fault_addr)
+		  return;
+  }
+
+  /* Unhandled page fault: just kill it. */
   if (user) {
 	  thread_current() -> exit_code = -1;
 	  thread_exit();
@@ -165,4 +200,5 @@ page_fault (struct intr_frame *f)
 
   kill (f);
 }
+#undef STACK_LIMIT
 

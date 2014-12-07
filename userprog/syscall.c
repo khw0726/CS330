@@ -1,4 +1,5 @@
 #include "userprog/syscall.h"
+#include <hash.h>
 #include <stdio.h>
 #include <string.h>
 #include <syscall-nr.h>
@@ -11,10 +12,11 @@
 #include "userprog/pagedir.h"
 //added to use file_close!
 #include "filesys/file.h"
+#include "vm/frame.h"
 typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
-static bool is_valid_user_addr (const uint8_t *uaddr);
+static bool is_valid_user_addr (const uint8_t *uaddr, bool write);
 static int get_user (const uint8_t *uaddr);
 static bool put_user (uint8_t *udst, uint8_t byte);
 
@@ -40,14 +42,46 @@ static struct lock file_access_lock;
 
 /* Returns true if uaddr is valid user memory.
    this function should called before dereference. */
+#define STACK_LIMIT (uint8_t*)((uint8_t*)(PHYS_BASE) - (uint8_t*)(8*1024*1024))
 static bool
-is_valid_user_addr (const uint8_t *uaddr)
+is_valid_user_addr (const uint8_t *uaddr, bool write)
 {
 	if (uaddr >= PHYS_BASE) return false;
+	if (write &&
+		STACK_LIMIT <= thread_current() -> esp && thread_current() -> esp < PHYS_BASE &&
+		STACK_LIMIT <= uaddr && uaddr < PHYS_BASE &&
+		uaddr >= thread_current() -> esp) {
+		/* Stack growth. */
+		bool success = false;
+		uint8_t *stack_ptr1= (uint8_t*)(((unsigned)(uaddr)) / PGSIZE * PGSIZE) + PGSIZE;
+		uint8_t *stack_ptr2= (uint8_t*)(((unsigned)(thread_current()->esp)) / PGSIZE * PGSIZE) + PGSIZE;
+		uint8_t *stack_ptr = stack_ptr1 > stack_ptr2 ? stack_ptr1 : stack_ptr2;
+
+		while (stack_ptr > thread_current()->esp || stack_ptr > uaddr) {
+			stack_ptr -= PGSIZE;
+			if (frame_find_upage(&thread_current()  -> frame_table, stack_ptr))
+				continue;
+			if (frame_get_page(&thread_current()  -> frame_table, stack_ptr, FRM_WRITABLE | FRM_ZERO) == NULL)
+				break;
+		}
+
+		if (stack_ptr <= thread_current()->esp && stack_ptr <= uaddr)
+			success = true;
+
+		return success; 
+	}
 	if (pagedir_get_page(thread_current()->pagedir, uaddr) == NULL)
 		return false;
+
+	if (write &&
+		frame_find_upage(&thread_current()  -> frame_table, (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)) &&
+		!hash_entry(frame_find_upage(&thread_current()  -> frame_table,
+					(uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)), struct frame_entry, all_elem) -> writable)
+		return false;
+
 	return true;
 }
+#undef STACK_LIMIT
 
 void
 syscall_init (void) 
@@ -66,8 +100,9 @@ syscall_handler (struct intr_frame *f)
 {
 	char *esp = f -> esp;
 	int syscall_number = -1;
+	thread_current() -> esp = f -> esp;
 
-	if (is_valid_user_addr(esp) &&
+	if (is_valid_user_addr(esp, false) &&
 		is_user_vaddr_after(esp, 0, int)) {
 		syscall_number = *(int*)esp;
 	}
@@ -75,78 +110,78 @@ syscall_handler (struct intr_frame *f)
 	if (SYSTEMCALL_HANDLER_LIST) {
 	} else if (syscall_number == SYS_EXIT &&
 			is_user_vaddr_after(esp, 1, int) &&
-			is_valid_user_addr(kth(esp, 1))) {
+			is_valid_user_addr(kth(esp, 1), false)) {
 		exit_handler(get_arg(esp, 1, int));
 	} else if (syscall_number == SYS_REMOVE &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, char*)) {
 		syscall_return = remove_handler(get_arg(esp, 1, char*));
 	} else if (syscall_number == SYS_CREATE &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, char*) &&
-			is_valid_user_addr(kth(esp, 2)) &&
+			is_valid_user_addr(kth(esp, 2), false) &&
 			is_user_vaddr_after(esp, 2, unsigned)) {
 		syscall_return = create_handler(get_arg(esp, 1, char*), get_arg(esp, 2, unsigned));
 	} else if (syscall_number == SYS_OPEN &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, char*)) {
 		syscall_return = open_handler(get_arg(esp, 1, char*));
 	} else if (syscall_number == SYS_CLOSE &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int)) {
 		close_handler(get_arg(esp, 1, int));
 	} else if (syscall_number == SYS_SEEK &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int) &&
-			is_valid_user_addr(kth(esp, 2)) &&
+			is_valid_user_addr(kth(esp, 2), false) &&
 			is_user_vaddr_after(esp, 2, unsigned)) {
 		seek_handler(get_arg(esp, 1, int), get_arg(esp, 2, unsigned));
 	} else if (syscall_number == SYS_TELL &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int)) {
 		syscall_return = tell_handler(get_arg(esp, 1, int));
 	} else if (syscall_number == SYS_FILESIZE &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int)) {
 		syscall_return = filesize_handler(get_arg(esp, 1, int));
 	} else if (syscall_number == SYS_WRITE &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int) &&
-			is_valid_user_addr(kth(esp, 2)) &&
+			is_valid_user_addr(kth(esp, 2), false) &&
 			is_user_vaddr_after(esp, 2, char*) &&
-			is_valid_user_addr(kth(esp, 3)) &&
+			is_valid_user_addr(kth(esp, 3), false) &&
 			is_user_vaddr_after(esp, 3, unsigned)) {
 		syscall_return = write_handler(get_arg(esp, 1, int), get_arg(esp, 2, char*), get_arg(esp, 3, unsigned));
 	} else if (syscall_number == SYS_READ &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int) &&
-			is_valid_user_addr(kth(esp, 2)) &&
+			is_valid_user_addr(kth(esp, 2), true) &&
 			is_user_vaddr_after(esp, 2, char*) &&
-			is_valid_user_addr(kth(esp, 3)) &&
+			is_valid_user_addr(kth(esp, 3), false) &&
 			is_user_vaddr_after(esp, 3, unsigned)) {
 		syscall_return = read_handler(get_arg(esp, 1, int), get_arg(esp, 2, char*), get_arg(esp, 3, unsigned));
 	} else if (syscall_number == SYS_EXEC &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, char*)) {
 		syscall_return = exec_handler(get_arg(esp, 1, char*));
 	} else if (syscall_number == SYS_WAIT &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, pid_t)) {
 		syscall_return = wait_handler(get_arg(esp, 1, pid_t));
 	} else if (syscall_number == SYS_HALT) {
 		halt_handler();
 	} else if (syscall_number == SYS_FIBO &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int)) {
 		syscall_return = fibonacci(get_arg(esp, 1, int));
 	} else if (syscall_number == SYS_FOURSUM &&
-			is_valid_user_addr(kth(esp, 1)) &&
+			is_valid_user_addr(kth(esp, 1), false) &&
 			is_user_vaddr_after(esp, 1, int) &&
-			is_valid_user_addr(kth(esp, 2)) &&
+			is_valid_user_addr(kth(esp, 2), false) &&
 			is_user_vaddr_after(esp, 2, int) &&
-			is_valid_user_addr(kth(esp, 3)) &&
+			is_valid_user_addr(kth(esp, 3), false) &&
 			is_user_vaddr_after(esp, 3, int) &&
-			is_valid_user_addr(kth(esp, 4)) &&
+			is_valid_user_addr(kth(esp, 4), false) &&
 			is_user_vaddr_after(esp, 4, int)) {
 		syscall_return = sum_of_four_integers(get_arg(esp, 1, int), get_arg(esp, 2, int), get_arg(esp, 3, int), get_arg(esp, 4, int));
 	} else { /* Not implemented call or invalid call. */
@@ -170,8 +205,8 @@ static bool
 remove_handler (const char *file_name)
 {
 	if (!is_user_vaddr(file_name) ||
-		!is_valid_user_addr(file_name) ||
-		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0)))
+		!is_valid_user_addr(file_name, false) ||
+		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0), false))
 		exit_handler(-1);
 
 	return filesys_remove(file_name);
@@ -181,8 +216,8 @@ static bool
 create_handler (const char *file_name, unsigned initial_size)
 {
 	if (!is_user_vaddr(file_name) ||
-		!is_valid_user_addr(file_name) ||
-		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0)))
+		!is_valid_user_addr(file_name, false) ||
+		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0), false))
 		exit_handler(-1);
 
 	return filesys_create(file_name, initial_size);
@@ -193,8 +228,8 @@ static int
 open_handler (const char *file_name)
 {
 	if (!is_user_vaddr(file_name) ||
-		!is_valid_user_addr(file_name) ||
-		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0)))
+		!is_valid_user_addr(file_name, false) ||
+		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0), false))
 		exit_handler(-1);
 
 	struct file *fp = NULL;
@@ -295,7 +330,7 @@ write_handler (int fd, const void *buffer, unsigned size)
 {
 	if (!is_user_vaddr(buffer) ||
 		!is_user_vaddr(buffer+(size > 0 ? size-1 : 0)) ||
-		!is_valid_user_addr(buffer))
+		!is_valid_user_addr(buffer, false))
 		exit_handler(-1);
 
 	int bytes_written = 0;
@@ -323,7 +358,8 @@ read_handler (int fd, void *buffer, unsigned size)
 {
 	if (!is_user_vaddr(buffer) ||
 		!is_user_vaddr(buffer+(size > 0 ? size-1 : 0)) ||
-		!is_valid_user_addr(buffer))
+		!is_valid_user_addr(buffer, true) ||
+		!is_valid_user_addr(buffer + size, true))
 		exit_handler(-1);
 
 	int bytes_read = 0;
@@ -356,8 +392,8 @@ static pid_t
 exec_handler (const char *cmd_line)
 {
 	if (!is_user_vaddr(cmd_line) ||
-		!is_valid_user_addr(cmd_line) ||
-		!is_valid_user_addr(cmd_line+(strlen(cmd_line) ? strlen(cmd_line)-1 : 0)))
+		!is_valid_user_addr(cmd_line, false) ||
+		!is_valid_user_addr(cmd_line+(strlen(cmd_line) ? strlen(cmd_line)-1 : 0), false))
 		exit_handler(-1);
 
 	return process_execute(cmd_line);

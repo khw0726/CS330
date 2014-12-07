@@ -21,6 +21,7 @@
 #include "threads/malloc.h"
 //added to use lock!
 #include "threads/synch.h"
+#include "vm/frame.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -83,6 +84,7 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
+  frame_init_table(&thread_current() -> frame_table);
   success = load (file_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
@@ -553,24 +555,17 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      uint8_t *knpage = palloc_get_page (PAL_USER);
+      uint8_t *knpage = frame_get_page (&thread_current()  -> frame_table, upage, writable ? FRM_WRITABLE : 0);
       if (knpage == NULL)
         return false;
 
       /* Load this page. */
       if (file_read (file, knpage, page_read_bytes) != (int) page_read_bytes)
         {
-          palloc_free_page (knpage);
+		  frame_free_page(&thread_current()  -> frame_table, upage);
           return false; 
         }
       memset (knpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, knpage, writable)) 
-        {
-          palloc_free_page (knpage);
-          return false; 
-        }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
@@ -588,14 +583,11 @@ setup_stack (void **esp)
   uint8_t *kpage;
   bool success = false;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  kpage = frame_get_page(&thread_current()  -> frame_table, PHYS_BASE - PGSIZE, FRM_ZERO | FRM_WRITABLE);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
-        palloc_free_page (kpage);
+      success = true;
+	  *esp = PHYS_BASE;
     }
   return success;
 }
