@@ -31,6 +31,13 @@ static uint8_t* find_victim(void);
 static uint8_t*
 find_victim(void)
 {
+	bool wait_for_lock = false;
+	if (frame_lock.holder != thread_current())
+		wait_for_lock = true;
+
+	if (wait_for_lock)
+		lock_acquire(&frame_lock);
+
 	int loop_cnt = list_size(&frame_list) << 1;
 
 	/* Circulate whole list to find victim. */
@@ -64,8 +71,12 @@ find_victim(void)
 									 NULL, offset, PGSIZE, false, true);
 				}
 				free(e);
+				if (wait_for_lock)
+					lock_release(&frame_lock);
 				return kpage;
 			} else {
+				if (wait_for_lock)
+					lock_release(&frame_lock);
 				return NULL;
 			}
 
@@ -73,6 +84,8 @@ find_victim(void)
 
 	}
 
+	if (wait_for_lock)
+		lock_release(&frame_lock);
 	return NULL;
 }
 
@@ -156,7 +169,9 @@ static hash_action_func free_frame;
 void
 frame_free_all(struct hash *frame_table)
 {
+	lock_acquire(&frame_lock);
 	hash_destroy(frame_table, free_frame);
+	lock_release(&frame_lock);
 }
 
 struct hash_elem*
