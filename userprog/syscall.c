@@ -13,6 +13,7 @@
 //added to use file_close!
 #include "filesys/file.h"
 #include "vm/frame.h"
+#include "vm/page.h"
 typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
@@ -41,12 +42,51 @@ static unsigned tell_handler (int fd);
 static struct lock file_access_lock;
 
 /* Returns true if uaddr is valid user memory.
-   this function should called before dereference. */
+   this function should be called before every dereference. */
 #define STACK_LIMIT (uint8_t*)((uint8_t*)(PHYS_BASE) - (uint8_t*)(8*1024*1024))
 static bool
 is_valid_user_addr (const uint8_t *uaddr, bool write)
 {
 	if (uaddr >= PHYS_BASE) return false;
+
+	if (write &&
+		frame_find_upage(&thread_current()  -> frame_table, (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)) &&
+		!hash_entry(frame_find_upage(&thread_current()  -> frame_table,
+					(uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)), struct frame_entry, all_elem) -> writable)
+		return false;
+
+	if (pagedir_get_page(thread_current()->pagedir, uaddr) != NULL)
+		return true;
+
+	struct supp_page_entry *e = NULL;
+	if (e = supp_page_find(&thread_current() -> supp_page_table, uaddr)) {
+		uint8_t *fault_page = (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE);
+		/* Lazy Loading of Segments */
+		if (e -> is_segment) {
+			uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
+					(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
+			if (frm) {
+				file_seek(e -> swap_file, e -> swap_offset);
+				if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length)
+					return true;
+				frame_free_page(&thread_current()  -> frame_table, fault_page);
+				return false;
+			}
+			return false;
+		} else if (e) {
+			/* Swapped out pages. */
+			uint8_t * frm = frame_get_page(&thread_current() -> frame_table, fault_page,
+										   (e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
+			if (frm) {
+				swap_read(frm, e -> swap_offset);
+				supp_page_remove(&thread_current()->supp_page_table, fault_page);
+				return true;
+			}
+
+			return false;
+		}
+	}
+
 	if (write &&
 		STACK_LIMIT <= thread_current() -> esp && thread_current() -> esp < PHYS_BASE &&
 		STACK_LIMIT <= uaddr && uaddr < PHYS_BASE &&
@@ -70,16 +110,8 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 
 		return success; 
 	}
-	if (pagedir_get_page(thread_current()->pagedir, uaddr) == NULL)
-		return false;
 
-	if (write &&
-		frame_find_upage(&thread_current()  -> frame_table, (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)) &&
-		!hash_entry(frame_find_upage(&thread_current()  -> frame_table,
-					(uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)), struct frame_entry, all_elem) -> writable)
-		return false;
-
-	return true;
+	return false;
 }
 #undef STACK_LIMIT
 

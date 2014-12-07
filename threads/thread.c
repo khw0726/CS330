@@ -431,6 +431,7 @@ thread_exit (void)
 
 	  thread_current() -> is_alive = false;
 	  frame_free_all(&thread_current() -> frame_table);
+	  supp_page_destroy(&thread_current() -> supp_page_table);
 	  if (is_thread(parent) &&
 		  parent -> waiting_for == myid &&
 		  parent -> status == THREAD_BLOCKED) {

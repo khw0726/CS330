@@ -22,6 +22,7 @@
 //added to use lock!
 #include "threads/synch.h"
 #include "vm/frame.h"
+#include "vm/page.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -85,6 +86,7 @@ start_process (void *file_name_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   frame_init_table(&thread_current() -> frame_table);
+  supp_page_init_table(&thread_current() -> supp_page_table);
   success = load (file_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
@@ -544,7 +546,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
+  char *temporary_buf = malloc(PGSIZE);
 
+  unsigned total_read = ofs;
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
@@ -553,25 +557,20 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
          and zero the final PAGE_ZERO_BYTES bytes. */
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
-      /* Get a page of memory. */
-      uint8_t *knpage = frame_get_page (&thread_current()  -> frame_table, upage, writable ? FRM_WRITABLE : 0);
-      if (knpage == NULL)
-        return false;
-
-      /* Load this page. */
-      if (file_read (file, knpage, page_read_bytes) != (int) page_read_bytes)
-        {
-		  frame_free_page(&thread_current()  -> frame_table, upage);
-          return false; 
-        }
-      memset (knpage + page_read_bytes, 0, page_zero_bytes);
-
+	  file_seek(file, total_read);
+	  supp_page_insert(&thread_current() -> supp_page_table, upage,
+					   file, file_tell(file), page_read_bytes, true, writable);
+	  if (file_read (file, temporary_buf, page_read_bytes) != (int) page_read_bytes) {
+		  free(temporary_buf);
+		   return false;
+	  }
       /* Advance. */
+	  total_read += page_read_bytes;
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
+  free(temporary_buf);
   return true;
 }
 

@@ -5,8 +5,10 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "filesys/file.h"
 #include "vm/frame.h"
 #include "vm/page.h"
+#include "vm/swap.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -158,10 +160,41 @@ page_fault (struct intr_frame *f)
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
-  printf("%p(limit:%p), %p(limit:%p)\n", fault_addr, STACK_LIMIT, f -> esp, PHYS_BASE);
-  */
+   */
 
-  /* TODO: Make use of supplemenetal page table. */
+  if (user && not_present) {
+	  uint8_t *fault_page = (uint8_t*)((unsigned)fault_addr / PGSIZE * PGSIZE);
+	  struct supp_page_entry *e = supp_page_find(&thread_current() -> supp_page_table, fault_page);
+	  //printf("PF::Supplement::Trying to find [%p] : %p\n", fault_page, e);
+
+	  /* Lazy loading of segments. */
+	  if (e && e -> is_segment) {
+		  uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
+										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
+		  //puts("PF::Segment::Enter");
+		  if (frm) {
+			  file_seek(e -> swap_file, e -> swap_offset);
+			  //puts("PF::Segment::Good");
+			  if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length)
+				  return;
+			  //puts("PF::Segment::Bad");
+			  frame_free_page(&thread_current()  -> frame_table, fault_page);
+		  }
+		  //puts("PF::Segment::OOM");
+	  } else if (e) {
+		  //puts("PF::Swap::Entered");
+		  /* Swapped out pages. */
+		  uint8_t * frm = frame_get_page(&thread_current() -> frame_table, fault_page,
+										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
+		  if (frm) {
+			  //puts("PF::Swap::Good");
+			  swap_read(frm, e -> swap_offset);
+			  supp_page_remove(&thread_current()->supp_page_table, fault_page);
+			  return;
+		  }
+		  //puts("PF::Swap::OOM");
+	  }
+  }
 
   /* Stack Growth */
   if (user && not_present && write &&
@@ -184,6 +217,7 @@ page_fault (struct intr_frame *f)
 
   /* Unhandled page fault: just kill it. */
   if (user) {
+	  //puts("Dead");
 	  thread_current() -> exit_code = -1;
 	  thread_exit();
 	  return;

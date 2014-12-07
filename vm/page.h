@@ -15,12 +15,18 @@ struct supp_page_entry {
 	struct file* swap_file;
 	size_t swap_offset;
 	size_t length;
+	bool is_segment;
+	bool is_writable;
 	
 	struct hash_elem all_elem;
 };
 
-struct supp_page_entry* supp_page_find(uint8_t* uaddr);
 void supp_page_init(void);
-void supp_page_insert(uint8_t *upage, struct file *swap_file, size_t swap_offset, size_t length);
+void supp_page_destroy(struct hash *supp_page_table);
+void supp_page_init_table(struct hash *supp_page_table);
+void supp_page_remove(struct hash *supp_page_table, uint8_t *upage);
+struct supp_page_entry* supp_page_find(struct hash *supp_page_table, uint8_t *uaddr);
+void supp_page_insert(struct hash *supp_page_table, uint8_t *upage, struct file *swap_file,
+					  size_t swap_offset, size_t length, bool is_segment, bool is_writable);
 
 #endif /* vm/page.h */

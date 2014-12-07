@@ -39,6 +39,8 @@
 #endif
 #ifdef VM
 #include "vm/frame.h"
+#include "vm/page.h"
+#include "vm/swap.h"
 #endif
 
 #ifndef USERPROG
@@ -120,9 +122,6 @@ main (void)
 #ifdef USERPROG
   exception_init ();
   syscall_init ();
-#ifdef VM
-  frame_init();
-#endif
 
 #endif
 
@@ -136,6 +135,12 @@ main (void)
   ide_init ();
   locate_block_devices ();
   filesys_init (format_filesys);
+#endif
+
+#ifdef VM
+  swap_init();
+  frame_init();
+  supp_page_init();
 #endif
 
   printf ("Boot complete.\n");

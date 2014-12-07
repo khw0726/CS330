@@ -22,7 +22,9 @@ struct frame_entry {
 	/* Frame is writable if true. */
 	bool writable;
 
+	struct thread *holder;
 	struct hash_elem all_elem;
+	struct list_elem vict_elem;
 };
 
 uint8_t* frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags);
