@@ -388,11 +388,12 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
   if (success) {
 	  /* Denial of writing on myself. */
-	  t->myself = filesys_open(file_name);
+	  t->myself = file;
 	  file_deny_write(t->myself);
+  } else {
+	  file_close (file);
   }
   return success;
 }
@@ -582,7 +583,7 @@ setup_stack (void **esp)
   uint8_t *kpage;
   bool success = false;
 
-  kpage = frame_get_page(&thread_current()  -> frame_table, PHYS_BASE - PGSIZE, FRM_ZERO | FRM_WRITABLE);
+  kpage = frame_get_page(&thread_current()  -> frame_table, (uint8_t*)PHYS_BASE - PGSIZE, FRM_ZERO | FRM_WRITABLE);
   if (kpage != NULL) 
     {
       success = true;

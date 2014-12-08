@@ -425,13 +425,15 @@ thread_exit (void)
 		  }
 	  }
 
-	  process_exit ();
 	  if (thread_current() -> myself != NULL)
 		  file_close(thread_current()->myself);
 
-	  thread_current() -> is_alive = false;
 	  frame_free_all(&thread_current() -> frame_table);
 	  supp_page_destroy(&thread_current() -> supp_page_table);
+
+	  process_exit ();
+
+	  thread_current() -> is_alive = false;
 	  if (is_thread(parent) &&
 		  parent -> waiting_for == myid &&
 		  parent -> status == THREAD_BLOCKED) {
@@ -672,6 +674,7 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init(&t->files);
   t->last_fd = 2;
   t->myself = NULL;
+  lock_init(&t->thread_page_lock);
 #endif
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);

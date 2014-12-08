@@ -21,22 +21,36 @@
 #include "vm/page.h"
 #include "vm/swap.h"
 
+static int frame_lock_depth;
 static struct lock frame_lock;
 static struct list frame_list;
 static struct list_elem *clock_hand;
 static uint8_t* find_victim(void);
+
+static void
+acquire_frame_lock(void)
+{
+	if (lock_held_by_current_thread(&frame_lock))
+		++frame_lock_depth;
+	else
+		lock_acquire(&frame_lock);
+}
+
+static void
+release_frame_lock(void)
+{
+	if (frame_lock_depth > 0)
+		--frame_lock_depth;
+	else
+		lock_release(&frame_lock);
+}
 
 /* CLOCK page replacement algorithm implementation.
    It returns kernel page of evicted frame. */
 static uint8_t*
 find_victim(void)
 {
-	bool wait_for_lock = false;
-	if (frame_lock.holder != thread_current())
-		wait_for_lock = true;
-
-	if (wait_for_lock)
-		lock_acquire(&frame_lock);
+	acquire_frame_lock();
 
 	int loop_cnt = list_size(&frame_list) << 1;
 
@@ -48,21 +62,31 @@ find_victim(void)
 
 		/* Find pte for this frame, then investigate accessed bit(&PTE_A). */
 		struct frame_entry *e = list_entry(clock_hand, struct frame_entry, vict_elem);
+		lock_acquire(&e->holder->thread_page_lock);
 		if (pagedir_is_accessed(e -> pagedir, e -> user_vaddr)) {
 			/* Give second chance. */
 			pagedir_set_accessed(e -> pagedir, e -> user_vaddr, false);
-			clock_hand = list_next(clock_hand);
+			lock_release(&e->holder->thread_page_lock);
+			if (clock_hand != list_end(&frame_list))
+				clock_hand = list_next(clock_hand);
+			else
+				clock_hand = NULL;
 		} else {
+			lock_release(&e->holder->thread_page_lock);
 			/* Evict this. */
-			struct list_elem *vict_elem = clock_hand;
 			unsigned offset = BITMAP_ERROR;
-			clock_hand = list_next(clock_hand);
+			if (clock_hand != list_end(&frame_list))
+				clock_hand = list_next(clock_hand);
+			else
+				clock_hand = NULL;
 			if (e -> writable)
 				offset = swap_write(e -> kernel_vaddr);
 			if (offset != BITMAP_ERROR || !e -> writable) {
-				list_remove(vict_elem);
+				lock_acquire(&e->holder->thread_page_lock);
+				list_remove(&e -> vict_elem);
 				hash_delete(&e -> holder -> frame_table, &e -> all_elem);
 				pagedir_clear_page(e -> pagedir, e -> user_vaddr);
+				lock_release(&e->holder->thread_page_lock);
 				uint8_t *kpage = e -> kernel_vaddr;
 				if (e -> writable) {
 					if (supp_page_find(&e -> holder -> supp_page_table, e -> user_vaddr) != NULL)
@@ -71,12 +95,10 @@ find_victim(void)
 									 NULL, offset, PGSIZE, false, true);
 				}
 				free(e);
-				if (wait_for_lock)
-					lock_release(&frame_lock);
+				release_frame_lock();
 				return kpage;
 			} else {
-				if (wait_for_lock)
-					lock_release(&frame_lock);
+				release_frame_lock();
 				return NULL;
 			}
 
@@ -84,8 +106,7 @@ find_victim(void)
 
 	}
 
-	if (wait_for_lock)
-		lock_release(&frame_lock);
+	release_frame_lock();
 	return NULL;
 }
 
@@ -93,12 +114,7 @@ find_victim(void)
 uint8_t*
 frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags)
 {
-	bool wait_for_lock = false;
-	if (frame_lock.holder != thread_current())
-		wait_for_lock = true;
-
-	if (wait_for_lock)
-		lock_acquire(&frame_lock);
+	acquire_frame_lock();
 
 	enum palloc_flags pal_flags = PAL_USER;
 
@@ -127,6 +143,8 @@ frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags)
 	}
 
 	item = (struct frame_entry*)malloc(sizeof *item);
+	ASSERT (item != NULL);
+	lock_acquire(&thread_current()->thread_page_lock);
 	item -> pagedir = thread_current() -> pagedir;
 	item -> user_vaddr = upage;
 	item -> kernel_vaddr = frame;
@@ -135,33 +153,36 @@ frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags)
 	hash_insert(frame_table, &item->all_elem);
 	list_push_back(&frame_list, &item->vict_elem);
 	pagedir_set_page(item->pagedir, item->user_vaddr, item->kernel_vaddr, item->writable);
+	lock_release(&thread_current()->thread_page_lock);
 
-	if (wait_for_lock)
-		lock_release(&frame_lock);
+	release_frame_lock();
 	return frame;
 }
 
 void
 frame_free_page(struct hash *frame_table, uint8_t* upage)
 {
-	bool wait_for_lock = false;
-	if (frame_lock.holder != thread_current())
-		wait_for_lock = true;
-
-	if (wait_for_lock)
-		lock_acquire(&frame_lock);
+	acquire_frame_lock();
 
 	struct hash_elem *ptr = frame_find_upage(frame_table, upage);
 	if (ptr != NULL) {
 		struct frame_entry *item = hash_entry(ptr, struct frame_entry, all_elem);
+		if (&item->vict_elem == clock_hand) {
+			if (clock_hand != list_end(&frame_list))
+				clock_hand = list_next(clock_hand);
+			else
+				clock_hand = NULL;
+		}
+		lock_acquire(&thread_current()->thread_page_lock);
 		list_remove(&item->vict_elem);
 		hash_delete(frame_table, &item->all_elem);
 		pagedir_clear_page(item->pagedir, item->user_vaddr);
+		lock_release(&thread_current()->thread_page_lock);
+		palloc_free_page(item->kernel_vaddr);
 		free(item);
 	}
 
-	if (wait_for_lock)
-		lock_release(&frame_lock);
+	release_frame_lock();
 }
 
 static hash_action_func free_frame;
@@ -169,9 +190,9 @@ static hash_action_func free_frame;
 void
 frame_free_all(struct hash *frame_table)
 {
-	lock_acquire(&frame_lock);
+	acquire_frame_lock();
 	hash_destroy(frame_table, free_frame);
-	lock_release(&frame_lock);
+	release_frame_lock();
 }
 
 struct hash_elem*
@@ -188,7 +209,6 @@ static hash_less_func less_frame;
 static void free_frame
 (struct hash_elem *elem, void *aux)
 {
-	//list_remove(&hash_entry(elem, struct frame_entry, all_elem) -> lru_elem);
 	frame_free_page((struct hash*)aux, hash_entry(elem, struct frame_entry, all_elem) -> user_vaddr);
 }
 
@@ -210,6 +230,7 @@ void
 frame_init(void)
 {
 	clock_hand = NULL;
+	frame_lock_depth = 0;
 	lock_init(&frame_lock);
 	list_init(&frame_list);
 }

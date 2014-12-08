@@ -412,6 +412,13 @@ read_handler (int fd, void *buffer, unsigned size)
 			lock_release(&file_access_lock);
 			return -1;
 		}
+		int size_left = size, buf_ptr = 0;
+		while (size_left > 0) {
+			is_valid_user_addr(buf + buf_ptr, true);
+			buf_ptr += PGSIZE;
+			size_left -= PGSIZE;
+		}
+		is_valid_user_addr(buf, true);
 		entry = list_entry(iter, struct fdesc, elem);
 		bytes_read = file_read(entry->file, buffer, size);
 		lock_release(&file_access_lock);

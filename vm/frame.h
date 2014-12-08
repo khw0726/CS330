@@ -22,6 +22,9 @@ struct frame_entry {
 	/* Frame is writable if true. */
 	bool writable;
 
+	/* Do not evict when the frame is pinned. */
+	bool pinned;
+
 	struct thread *holder;
 	struct hash_elem all_elem;
 	struct list_elem vict_elem;

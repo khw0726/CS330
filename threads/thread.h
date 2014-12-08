@@ -159,6 +159,7 @@ struct thread
 	uint8_t *esp;
 	struct hash frame_table;
 	struct hash supp_page_table;
+	struct lock thread_page_lock;
 #endif
 
     /* Owned by thread.c. */
