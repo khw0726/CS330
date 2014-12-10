@@ -33,8 +33,10 @@ swap_write(const uint8_t *uaddr)
 	unsigned offset = 0, i = 0;
 	offset = bitmap_scan_and_flip(used_slots, 0, 1, false);
 
-	if (offset == BITMAP_ERROR)
+	if (offset == BITMAP_ERROR) {
+		lock_release(&block_lock);
 		return BITMAP_ERROR;
+	}
 
 	/* One page equals to eight sectors. */
 	for (i = 0; i < 8; i++) {
@@ -53,7 +55,7 @@ swap_read(uint8_t *uaddr, const unsigned offset)
 
 	/* One page equals to eight sectors. */
 	for (i = 0; i < 8; i++) {
-		block_read(swap_block, offset * 8  + i, uaddr + 512 * i);
+		block_read(swap_block, offset * 8 + i, uaddr + 512 * i);
 	}
 
 	lock_release(&block_lock);

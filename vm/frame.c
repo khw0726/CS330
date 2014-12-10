@@ -62,6 +62,15 @@ find_victim(void)
 
 		/* Find pte for this frame, then investigate accessed bit(&PTE_A). */
 		struct frame_entry *e = list_entry(clock_hand, struct frame_entry, vict_elem);
+
+		if (e -> pinned) { /* pinned frame, do NOT evict at this time. */
+			if (clock_hand != list_end(&frame_list))
+				clock_hand = list_next(clock_hand);
+			else
+				clock_hand = NULL;
+			continue;
+		}
+
 		lock_acquire(&e->holder->thread_page_lock);
 		if (pagedir_is_accessed(e -> pagedir, e -> user_vaddr)) {
 			/* Give second chance. */
@@ -134,8 +143,10 @@ frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags)
 		   Use swap to resolve this situation! */
 		frame = find_victim();
 
-		if (frame == NULL)
+		if (frame == NULL) {
+			release_frame_lock();
 			return NULL;
+		}
 
 		if (flags & FRM_ZERO)
 			memset(frame, 0, PGSIZE);
@@ -150,6 +161,7 @@ frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags)
 	item -> kernel_vaddr = frame;
 	item -> holder = thread_current();
 	item -> writable = true && (flags & FRM_WRITABLE);
+	item -> pinned = false;
 	hash_insert(frame_table, &item->all_elem);
 	list_push_back(&frame_list, &item->vict_elem);
 	pagedir_set_page(item->pagedir, item->user_vaddr, item->kernel_vaddr, item->writable);
@@ -209,7 +221,13 @@ static hash_less_func less_frame;
 static void free_frame
 (struct hash_elem *elem, void *aux)
 {
-	frame_free_page((struct hash*)aux, hash_entry(elem, struct frame_entry, all_elem) -> user_vaddr);
+	acquire_frame_lock();
+	struct frame_entry *item = hash_entry(elem, struct frame_entry, all_elem);
+	list_remove(&item -> vict_elem);
+	pagedir_clear_page(item -> pagedir, item -> user_vaddr);
+	palloc_free_page(item -> kernel_vaddr);
+	free(item);
+	release_frame_lock();
 }
 
 static unsigned hash_frame
@@ -238,5 +256,5 @@ frame_init(void)
 void
 frame_init_table(struct hash *frame_table)
 {
-	hash_init(frame_table, hash_frame, less_frame, frame_table);
+	hash_init(frame_table, hash_frame, less_frame, NULL);
 }

@@ -12,6 +12,7 @@
 #include "userprog/pagedir.h"
 //added to use file_close!
 #include "filesys/file.h"
+#include "threads/malloc.h"
 #include "vm/frame.h"
 #include "vm/page.h"
 typedef int pid_t;
@@ -69,7 +70,7 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 				file_seek(e -> swap_file, e -> swap_offset);
 				if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length)
 					return true;
-				frame_free_page(&thread_current()  -> frame_table, fault_page);
+				frame_free_page(&thread_current() -> frame_table, fault_page);
 				return false;
 			}
 			return false;
@@ -272,14 +273,17 @@ open_handler (const char *file_name)
 		return -1;
 	}
 
+	lock_acquire(&file_access_lock);
 	if ((fp = filesys_open(file_name)) != NULL) {
 		new_open = malloc(sizeof(*new_open));
 		new_open -> file = fp;
 		new_fd = thread_current() -> last_fd++;
 		new_open -> fd = new_fd;
 		list_push_back(&thread_current() -> files, &new_open -> elem);
+		lock_release(&file_access_lock);
 		return new_fd;
 	} else {
+		lock_release(&file_access_lock);
 		return -1;
 	}
 }
@@ -292,7 +296,7 @@ static struct list_elem *
 find_file_from_thread(int fd)
 {
 	struct list_elem *iter = NULL;
-	for (iter = list_begin(&thread_current() -> files); iter != list_end(&thread_current() -> files); iter = list_next(iter)) {
+	for (iter = list_begin(&thread_current() -> files);iter != list_end(&thread_current() -> files); iter = list_next(iter)) {
 		struct fdesc *entry = list_entry(iter, struct fdesc, elem);
 		if (entry -> fd == fd) return iter;
 	}
@@ -377,8 +381,39 @@ write_handler (int fd, const void *buffer, unsigned size)
 			lock_release(&file_access_lock);
 			return -1;
 		}
+
+		uint8_t *buf = (uint8_t*)((unsigned)buffer / PGSIZE * PGSIZE);
+		int size_left = (size + PGSIZE - 1) / PGSIZE * PGSIZE + (size % PGSIZE == 0 ? PGSIZE : 0),
+			buf_ptr = 0;
+
+		while (size_left > 0) {
+			if (is_valid_user_addr(buf + buf_ptr, true)) {
+				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
+										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+				if (h)
+					hash_entry(h, struct frame_entry, all_elem) -> pinned = true;
+			}
+			buf_ptr += PGSIZE;
+			size_left -= PGSIZE;
+		}
+
 		entry = list_entry(iter, struct fdesc, elem);
 		bytes_written = file_write(entry->file, buffer, size);
+
+		size_left = (size + PGSIZE - 1) / PGSIZE * PGSIZE + (size % PGSIZE == 0 ? PGSIZE : 0);
+		buf_ptr = 0;
+
+		while (size_left > 0) {
+			if (is_valid_user_addr(buf + buf_ptr, true)) {
+				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
+										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+				if (h)
+					hash_entry(h, struct frame_entry, all_elem) -> pinned = false;
+			}
+			buf_ptr += PGSIZE;
+			size_left -= PGSIZE;
+		}
+
 		lock_release(&file_access_lock);
 	}
 
@@ -395,7 +430,7 @@ read_handler (int fd, void *buffer, unsigned size)
 		exit_handler(-1);
 
 	int bytes_read = 0;
-	uint8_t *buf = buffer;
+	uint8_t *buf = (uint8_t*)((unsigned)buffer / PGSIZE * PGSIZE);
 	if (fd == 0) {
 		input_init();
 		while (size > 0) {
@@ -412,15 +447,38 @@ read_handler (int fd, void *buffer, unsigned size)
 			lock_release(&file_access_lock);
 			return -1;
 		}
-		int size_left = size, buf_ptr = 0;
+
+		int size_left = (size + PGSIZE - 1) / PGSIZE * PGSIZE + (size % PGSIZE == 0 ? PGSIZE : 0),
+			buf_ptr = 0;
+
 		while (size_left > 0) {
-			is_valid_user_addr(buf + buf_ptr, true);
+			if (is_valid_user_addr(buf + buf_ptr, true)) {
+				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
+										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+				if (h)
+					hash_entry(h, struct frame_entry, all_elem) -> pinned = true;
+			}
 			buf_ptr += PGSIZE;
 			size_left -= PGSIZE;
 		}
-		is_valid_user_addr(buf, true);
+
 		entry = list_entry(iter, struct fdesc, elem);
 		bytes_read = file_read(entry->file, buffer, size);
+
+		size_left = (size + PGSIZE - 1) / PGSIZE * PGSIZE + (size % PGSIZE == 0 ? PGSIZE : 0);
+		buf_ptr = 0;
+
+		while (size_left > 0) {
+			if (is_valid_user_addr(buf + buf_ptr, true)) {
+				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
+										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+				if (h)
+					hash_entry(h, struct frame_entry, all_elem) -> pinned = false;
+			}
+			buf_ptr += PGSIZE;
+			size_left -= PGSIZE;
+		}
+
 		lock_release(&file_access_lock);
 	}
 

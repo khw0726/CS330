@@ -428,8 +428,8 @@ thread_exit (void)
 	  if (thread_current() -> myself != NULL)
 		  file_close(thread_current()->myself);
 
-	  frame_free_all(&thread_current() -> frame_table);
 	  supp_page_destroy(&thread_current() -> supp_page_table);
+	  frame_free_all(&thread_current() -> frame_table);
 
 	  process_exit ();
 

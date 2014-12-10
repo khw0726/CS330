@@ -154,43 +154,44 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  /*
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
+	  */
 
   if (user && not_present) {
 	  uint8_t *fault_page = (uint8_t*)((unsigned)fault_addr / PGSIZE * PGSIZE);
 	  struct supp_page_entry *e = supp_page_find(&thread_current() -> supp_page_table, fault_page);
-	  printf("PF::Supplement::Trying to find [%p] : %p\n", fault_page, e);
+	  //printf("PF::Supplement::Trying to find [%p] : %p\n", fault_page, e);
 
 	  /* Lazy loading of segments. */
 	  if (e && e -> is_segment) {
 		  uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
 										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
-		  puts("PF::Segment::Enter");
+		  //puts("PF::Segment::Enter");
 		  if (frm) {
 			  file_seek(e -> swap_file, e -> swap_offset);
-			  puts("PF::Segment::Good");
+			  //puts("PF::Segment::Good");
 			  if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length)
 				  return;
-			  puts("PF::Segment::Bad");
+			  //puts("PF::Segment::Bad");
 			  frame_free_page(&thread_current()  -> frame_table, fault_page);
 		  }
-		  puts("PF::Segment::OOM");
+		  //puts("PF::Segment::OOM");
 	  } else if (e) {
-		  puts("PF::Swap::Entered");
+		  //puts("PF::Swap::Entered");
 		  /* Swapped out pages. */
 		  uint8_t * frm = frame_get_page(&thread_current() -> frame_table, fault_page,
 										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
 		  if (frm) {
-			  puts("PF::Swap::Good");
+			  //puts("PF::Swap::Good");
 			  swap_read(frm, e -> swap_offset);
 			  supp_page_remove(&thread_current()->supp_page_table, fault_page);
 			  return;
 		  }
-		  puts("PF::Swap::OOM");
 	  }
   }
 
@@ -204,9 +205,9 @@ page_fault (struct intr_frame *f)
 
 	  while (stack_ptr > f->esp || stack_ptr > fault_addr) {
 		  stack_ptr -= PGSIZE;
-		  if (frame_find_upage(&thread_current()  -> frame_table, stack_ptr))
+		  if (frame_find_upage(&thread_current() -> frame_table, stack_ptr))
 			  continue;
-		  if (frame_get_page(&thread_current()  -> frame_table, stack_ptr, FRM_WRITABLE | FRM_ZERO) == NULL)
+		  if (frame_get_page(&thread_current() -> frame_table, stack_ptr, FRM_WRITABLE | FRM_ZERO) == NULL)
 			  break;
 	  }
 	  if (stack_ptr <= f->esp && stack_ptr <= fault_addr)
@@ -215,7 +216,6 @@ page_fault (struct intr_frame *f)
 
   /* Unhandled page fault: just kill it. */
   if (user) {
-	  //puts("Dead");
 	  thread_current() -> exit_code = -1;
 	  thread_exit();
 	  return;

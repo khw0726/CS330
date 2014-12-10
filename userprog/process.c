@@ -540,6 +540,7 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
 
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
+static char temporary_buf[PGSIZE];
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
@@ -547,7 +548,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
-  char *temporary_buf = malloc(PGSIZE);
 
   unsigned total_read = ofs;
   file_seek (file, ofs);
@@ -562,7 +562,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 	  supp_page_insert(&thread_current() -> supp_page_table, upage,
 					   file, file_tell(file), page_read_bytes, true, writable);
 	  if (file_read (file, temporary_buf, page_read_bytes) != (int) page_read_bytes) {
-		  free(temporary_buf);
 		   return false;
 	  }
       /* Advance. */
@@ -571,7 +570,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
-  free(temporary_buf);
   return true;
 }
 
