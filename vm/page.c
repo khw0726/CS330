@@ -15,13 +15,16 @@
 #include "threads/loader.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
-#include "threads/malloc.h"
 #include "threads/thread.h"
 #include "vm/swap.h"
 
 static int page_lock_depth;
 static struct lock page_lock;
 static struct hash_elem* find_supp_page_entry(struct hash *supp_page_table, uint8_t *uaddr);
+
+#define PAGE_POOL_SIZE 4000
+static int pool_ptr = 0;
+static struct supp_page_entry pool[PAGE_POOL_SIZE];
 
 static void
 acquire_page_lock(void)
@@ -57,7 +60,8 @@ supp_page_insert(struct hash *supp_page_table, uint8_t *upage, struct file *swap
 				 size_t swap_offset, size_t length, bool is_segment, bool is_writable)
 {
 	acquire_page_lock();
-	struct supp_page_entry *item = malloc(sizeof *item);
+	struct supp_page_entry *item = &pool[pool_ptr++];
+	ASSERT(pool_ptr <= PAGE_POOL_SIZE);
 
 	item -> user_vaddr = upage;
 	item -> swap_file = swap_file;
@@ -82,7 +86,6 @@ supp_page_remove(struct hash *supp_page_table, uint8_t *upage)
 		hash_delete(supp_page_table, e);
 		if (item -> swap_file == NULL)
 			swap_free(item -> swap_offset);
-		free(item);
 	}
 
 	release_page_lock();
@@ -108,7 +111,6 @@ static void free_supp_page
 	struct supp_page_entry *item = hash_entry(elem, struct supp_page_entry, all_elem);
 	if (item -> swap_file == NULL)
 		swap_free(item -> swap_offset);
-	free(item);
 	release_page_lock();
 }
 
@@ -148,3 +150,5 @@ supp_page_init_table(struct hash *supp_page_table)
 {
 	hash_init(supp_page_table, hash_supp_page, less_supp_page, supp_page_table);
 }
+
+#undef PAGE_POOL_SIZE

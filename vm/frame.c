@@ -27,6 +27,10 @@ static struct list frame_list;
 static struct list_elem *clock_hand;
 static uint8_t* find_victim(void);
 
+#define FRM_POOL_SIZE 4000
+static int pool_ptr = 0;
+static struct frame_entry pool[FRM_POOL_SIZE];
+
 static void
 acquire_frame_lock(void)
 {
@@ -103,7 +107,6 @@ find_victim(void)
 					supp_page_insert(&e -> holder -> supp_page_table, e -> user_vaddr,
 									 NULL, offset, PGSIZE, false, true);
 				}
-				free(e);
 				release_frame_lock();
 				return kpage;
 			} else {
@@ -153,7 +156,8 @@ frame_get_page(struct hash *frame_table, uint8_t* upage, enum frame_flags flags)
 
 	}
 
-	item = (struct frame_entry*)malloc(sizeof *item);
+	item = &pool[pool_ptr++];
+	ASSERT(pool_ptr <= FRM_POOL_SIZE);
 	ASSERT (item != NULL);
 	lock_acquire(&thread_current()->thread_page_lock);
 	item -> pagedir = thread_current() -> pagedir;
@@ -191,7 +195,6 @@ frame_free_page(struct hash *frame_table, uint8_t* upage)
 		pagedir_clear_page(item->pagedir, item->user_vaddr);
 		lock_release(&thread_current()->thread_page_lock);
 		palloc_free_page(item->kernel_vaddr);
-		free(item);
 	}
 
 	release_frame_lock();
@@ -226,7 +229,6 @@ static void free_frame
 	list_remove(&item -> vict_elem);
 	pagedir_clear_page(item -> pagedir, item -> user_vaddr);
 	palloc_free_page(item -> kernel_vaddr);
-	free(item);
 	release_frame_lock();
 }
 
@@ -258,3 +260,5 @@ frame_init_table(struct hash *frame_table)
 {
 	hash_init(frame_table, hash_frame, less_frame, NULL);
 }
+
+#undef FRM_POOL_SIZE
