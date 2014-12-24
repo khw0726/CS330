@@ -15,6 +15,9 @@ struct supp_page_entry {
 	struct file* swap_file;
 	size_t swap_offset;
 	size_t length;
+
+	/* Classify various types of the page. */
+	bool is_mmap;
 	bool is_segment;
 	bool is_writable;
 	

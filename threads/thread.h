@@ -99,6 +99,14 @@ struct fdesc {
 	struct file *file;
 	struct list_elem elem;
 };
+
+struct mdesc {
+	int md;
+	uint8_t *upage;
+	unsigned length;
+	struct file *file;
+	struct list_elem elem;
+};
 #endif
 
 /* For priority donation,
@@ -157,6 +165,8 @@ struct thread
 
 #ifdef VM
 	uint8_t *esp;
+	int last_md;
+	struct list maps;
 	struct hash frame_table;
 	struct hash supp_page_table;
 	struct lock thread_page_lock;

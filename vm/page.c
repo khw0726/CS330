@@ -67,6 +67,7 @@ supp_page_insert(struct hash *supp_page_table, uint8_t *upage, struct file *swap
 	item -> swap_file = swap_file;
 	item -> swap_offset = swap_offset;
 	item -> length = length;
+	item -> is_mmap = (is_segment ? false : (swap_file != NULL));
 	item -> is_segment = is_segment;
 	item -> is_writable = is_writable;
 

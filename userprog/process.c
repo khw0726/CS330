@@ -27,6 +27,9 @@
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
+#define PROC_POOL_SIZE 163840 
+static int pool_ptr = 0;
+static uint8_t pool[PROC_POOL_SIZE];
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -39,13 +42,13 @@ process_execute (const char *cmd_line)
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  fn_copy2= palloc_get_page (0);
-  if (fn_copy == NULL || fn_copy2 == NULL) {
-	if (fn_copy != NULL) palloc_free_page(fn_copy);
-	if (fn_copy2 != NULL) palloc_free_page(fn_copy2);
-    return TID_ERROR;
-  }
+  fn_copy = &pool[pool_ptr];
+  pool_ptr += PGSIZE;
+  ASSERT(pool_ptr <= PROC_POOL_SIZE);
+
+  fn_copy2= &pool[pool_ptr];
+  pool_ptr += PGSIZE;
+  ASSERT(pool_ptr <= PROC_POOL_SIZE);
 
   strlcpy (fn_copy, cmd_line, PGSIZE);
 
@@ -59,15 +62,11 @@ process_execute (const char *cmd_line)
   if (tid != TID_ERROR) {
 	  sema_down(&thread_from_tid(tid) -> exec_lock);
 	  if (thread_from_tid(tid) -> is_alive == false) {
-		  palloc_free_page(fn_copy2);
 		  return TID_ERROR;
 	  }
   }
 
 done:
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
-  palloc_free_page(fn_copy2);
   return tid;
 }
 
@@ -90,7 +89,6 @@ start_process (void *file_name_)
   success = load (file_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
   if (!success) {
 	thread_current() -> exit_code = -1;
 	thread_current() -> is_alive = false;
@@ -609,3 +607,4 @@ install_page (void *upage, void *kpage, bool writable)
   return (pagedir_get_page (th->pagedir, upage) == NULL
           && pagedir_set_page (th->pagedir, upage, kpage, writable));
 }
+#undef PROC_POOL_SIZE

@@ -165,29 +165,34 @@ page_fault (struct intr_frame *f)
   if (user && not_present) {
 	  uint8_t *fault_page = (uint8_t*)((unsigned)fault_addr / PGSIZE * PGSIZE);
 	  struct supp_page_entry *e = supp_page_find(&thread_current() -> supp_page_table, fault_page);
-	  //printf("PF::Supplement::Trying to find [%p] : %p\n", fault_page, e);
 
-	  /* Lazy loading of segments. */
-	  if (e && e -> is_segment) {
+	  if (e && e -> is_segment) { /* Lazy loading of segments. */
 		  uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
 										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
-		  //puts("PF::Segment::Enter");
 		  if (frm) {
 			  file_seek(e -> swap_file, e -> swap_offset);
-			  //puts("PF::Segment::Good");
 			  if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length)
 				  return;
-			  //puts("PF::Segment::Bad");
 			  frame_free_page(&thread_current()  -> frame_table, fault_page);
 		  }
-		  //puts("PF::Segment::OOM");
+	  } else if (e && e -> is_mmap) { /* Lazy loading of mmaped files. */
+		  uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
+										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
+		  if (frm) {
+			  int backup_offset = file_tell(e -> swap_file);
+			  file_seek(e -> swap_file, e -> swap_offset);
+			  if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length) {
+				  file_seek(e -> swap_file, backup_offset);
+				  return;
+			  }
+			  file_seek(e -> swap_file, backup_offset);
+			  frame_free_page(&thread_current()  -> frame_table, fault_page);
+		  }
 	  } else if (e) {
-		  //puts("PF::Swap::Entered");
 		  /* Swapped out pages. */
 		  uint8_t * frm = frame_get_page(&thread_current() -> frame_table, fault_page,
 										(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
 		  if (frm) {
-			  //puts("PF::Swap::Good");
 			  swap_read(frm, e -> swap_offset);
 			  supp_page_remove(&thread_current()->supp_page_table, fault_page);
 			  return;

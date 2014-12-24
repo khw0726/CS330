@@ -38,9 +38,14 @@ static void close_handler (int fd);
 static int filesize_handler (int fd);
 static void seek_handler (int fd, unsigned position);
 static unsigned tell_handler (int fd);
+static int mmap_handler (int fd, uint8_t *upage);
+void munmap_handler (int md);
 
 /* Mutex for file access. */
-static struct lock file_access_lock;
+struct lock file_access_lock;
+
+/* Mutex for mmap access. */
+struct lock mmap_access_lock;
 
 /* Returns true if uaddr is valid user memory.
    this function should be called before every dereference. */
@@ -64,6 +69,17 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 		uint8_t *fault_page = (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE);
 		/* Lazy Loading of Segments */
 		if (e -> is_segment) {
+			uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
+					(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
+			if (frm) {
+				file_seek(e -> swap_file, e -> swap_offset);
+				if (file_read (e -> swap_file, frm, e -> length) == (int) e -> length)
+					return true;
+				frame_free_page(&thread_current() -> frame_table, fault_page);
+				return false;
+			}
+			return false;
+		} else if (e && e -> is_mmap) {
 			uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
 					(e -> is_writable ? FRM_WRITABLE : 0) | FRM_ZERO);
 			if (frm) {
@@ -114,11 +130,11 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 
 	return false;
 }
-#undef STACK_LIMIT
 
 void
 syscall_init (void) 
 {
+  lock_init(&mmap_access_lock);
   lock_init(&file_access_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
@@ -217,6 +233,16 @@ syscall_handler (struct intr_frame *f)
 			is_valid_user_addr(kth(esp, 4), false) &&
 			is_user_vaddr_after(esp, 4, int)) {
 		syscall_return = sum_of_four_integers(get_arg(esp, 1, int), get_arg(esp, 2, int), get_arg(esp, 3, int), get_arg(esp, 4, int));
+	} else if (syscall_number == SYS_MMAP &&
+			is_valid_user_addr(kth(esp, 1), false) &&
+			is_user_vaddr_after(esp, 1, int) &&
+			is_valid_user_addr(kth(esp, 2), false) &&
+			is_user_vaddr_after(esp, 2, char*)) {
+		syscall_return = mmap_handler(get_arg(esp, 1, int), get_arg(esp, 2, char*));
+	} else if (syscall_number == SYS_MUNMAP &&
+			is_valid_user_addr(kth(esp, 1), false) &&
+			is_user_vaddr_after(esp, 1, int)) {
+		munmap_handler(get_arg(esp, 1, int));
 	} else { /* Not implemented call or invalid call. */
 		exit_handler(-1);
 	}
@@ -253,7 +279,16 @@ create_handler (const char *file_name, unsigned initial_size)
 		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0), false))
 		exit_handler(-1);
 
-	return filesys_create(file_name, initial_size);
+	uint8_t *buf = (uint8_t*)((unsigned)file_name / PGSIZE * PGSIZE);
+	is_valid_user_addr(buf, true);
+	struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
+			(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE));
+	if (h)
+		hash_entry(h, struct frame_entry, all_elem) -> pinned = true;
+
+	int ret = filesys_create(file_name, initial_size);
+	hash_entry(h, struct frame_entry, all_elem) -> pinned = false;
+	return ret;
 }
 
 #define MAX_FILE_PER_THREAD 32
@@ -529,3 +564,126 @@ sum_of_four_integers (int a, int b, int c, int d)
 {
 	return a + b + c + d;
 }
+
+/* Function-ize repeated iteration. */
+static struct list_elem *find_map_from_thread(int md);
+
+static struct list_elem *
+find_map_from_thread(int md)
+{
+	struct list_elem *iter = NULL;
+	for (iter = list_begin(&thread_current() -> maps);
+		 iter != list_end(&thread_current() -> maps); iter = list_next(iter)) {
+		struct mdesc *entry = list_entry(iter, struct mdesc, elem);
+		if (entry -> md == md) return iter;
+	}
+
+	return NULL;
+}
+
+static int 
+mmap_handler (int fd, uint8_t *upage)
+{
+	lock_acquire(&mmap_access_lock);
+	/* You can't map stdin/out, you can map only opened files. */
+	if (fd < 2 || fd >= thread_current() -> last_fd) {
+		lock_release(&mmap_access_lock);
+		return -1;
+	}
+
+	int mmap_length = filesize_handler(fd),
+		mmap_npages = (mmap_length + PGSIZE - 1) / PGSIZE;
+
+	/* It must be page-aligned, and fit into the virtual address region. */
+	if ((unsigned)upage != (unsigned)upage / PGSIZE * PGSIZE || upage + mmap_npages * PGSIZE >= PHYS_BASE) {
+		lock_release(&mmap_access_lock);
+		return -1;
+	}
+
+	/* It can't be mapped on stack region. */
+	if (STACK_LIMIT <= upage && upage + mmap_npages * PGSIZE < PHYS_BASE) {
+		return -1;
+	}
+
+	int left_length = mmap_length,
+		offset = 0, backup_offset = 0;
+	uint8_t *upage_ptr = upage;
+	struct list_elem *e = find_file_from_thread(fd);
+	struct fdesc* fdesc = NULL;
+
+	/* zero-sized file, or non-existing file. */
+	if (e == NULL || mmap_npages < 1 || mmap_length < 1) {
+		lock_release(&mmap_access_lock);
+		return -1;
+	}
+
+	fdesc = list_entry(e, struct fdesc, elem);
+	backup_offset = file_tell(fdesc -> file);
+
+	/* Check whether the memory region is assigned to another page or not. */
+	int i;
+	for (i = 0; i < mmap_npages; i++) {
+		if (supp_page_find(&thread_current() -> supp_page_table, upage + PGSIZE * i)) {
+			lock_release(&mmap_access_lock);
+			return -1;
+		}
+	}
+
+	/* Reached here because the memory regions are seems to be legal. */
+	while (left_length > 0) {
+		/* Push entries to the supplemental page table, one by one. */
+		supp_page_insert(&thread_current() -> supp_page_table, upage_ptr, fdesc -> file, offset,
+				left_length >= PGSIZE ? PGSIZE : left_length, false, true);
+		left_length -= PGSIZE;
+		upage_ptr += PGSIZE;
+		offset += PGSIZE;
+	}
+	file_seek(fdesc -> file, backup_offset);
+
+	/* Push this record to the list. */
+	struct mdesc *new_md = malloc(sizeof *new_md);
+	new_md -> md = thread_current() -> last_md++;
+	new_md -> file = fdesc -> file;
+	new_md -> upage = upage;
+	new_md -> length = mmap_length;
+	list_push_back(&thread_current() -> maps, &new_md -> elem);
+
+	lock_release(&mmap_access_lock);
+	return new_md -> md;
+}
+
+void
+munmap_handler (int md)
+{
+	lock_acquire(&mmap_access_lock);
+
+	struct list_elem *e = find_map_from_thread(md);
+	if (e == NULL) {
+		lock_release(&mmap_access_lock);
+		return;
+	}
+
+	struct mdesc *mdesc = list_entry(e, struct mdesc, elem);
+	list_remove(e);
+
+	int mmap_npages = (mdesc -> length + PGSIZE - 1) / PGSIZE,
+		offset = 0, backup_offset = file_tell(mdesc -> file),
+		left_size = mdesc -> length;
+	uint8_t *upage_ptr = mdesc -> upage;
+
+	/* Write contents back to the file. */
+	lock_acquire(&file_access_lock);
+	while (left_size > 0) {
+		is_valid_user_addr(upage_ptr, true);
+		file_write_at(mdesc -> file, upage_ptr, left_size < PGSIZE ? left_size : PGSIZE, offset);
+		left_size -= PGSIZE;
+		upage_ptr += PGSIZE;
+		offset += PGSIZE;
+	}
+	file_seek(mdesc -> file, backup_offset);
+	lock_release(&file_access_lock);
+
+	free(mdesc);
+	lock_release(&mmap_access_lock);
+}
+#undef STACK_LIMIT

@@ -22,6 +22,7 @@
 #include "threads/fixed-point.h"
 //added to use timer_ticks()
 #include "../devices/timer.h"
+#include "userprog/syscall.h"
 
 #ifndef USERPROG
 bool thread_prior_aging;
@@ -392,6 +393,17 @@ thread_exit (void)
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
+#ifdef VM
+	  {
+		  struct list_elem *e, *next = list_begin(&thread_current() -> maps);
+		  for (e = list_begin(&thread_current() -> maps); e != list_end(&thread_current() -> maps);
+			   e = next) {
+			  struct mdesc *mdesc = list_entry(e, struct mdesc, elem);
+			  next = list_next(e);
+			  munmap_handler(mdesc -> md);
+		  }
+	  }
+#endif
   {
 	  tid_t myid = thread_current() -> tid;
 	  struct thread *parent = thread_current() -> parent;
@@ -675,6 +687,10 @@ init_thread (struct thread *t, const char *name, int priority)
   t->last_fd = 2;
   t->myself = NULL;
   lock_init(&t->thread_page_lock);
+#ifdef VM
+  t->last_md = 1;
+  list_init(&t->maps);
+#endif
 #endif
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
