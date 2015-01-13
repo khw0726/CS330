@@ -230,7 +230,7 @@ free (void *p)
 
 #ifndef NDEBUG
           /* Clear the block to help detect use-after-free bugs. */
-          memset (b, 0xcc, d->block_size);
+          memset (b, 0xc8, d->block_size);
 #endif
   
           lock_acquire (&d->lock);

@@ -131,7 +131,7 @@ static bool less_supp_page
 static struct hash_elem*
 find_supp_page_entry(struct hash *supp_page_table, uint8_t *uaddr)
 {
-	uint8_t *upage = (uint8_t*)((unsigned)(uaddr) / PGSIZE * PGSIZE);
+	uint8_t *upage = pg_round_down(uaddr);
 	struct supp_page_entry dummy;
 	dummy.user_vaddr = upage;
 	struct hash_elem *e = hash_find(supp_page_table, &dummy.all_elem);

@@ -204,8 +204,8 @@ page_fault (struct intr_frame *f)
   if (user && not_present && write &&
 	  fault_addr >= STACK_LIMIT && f->esp >= STACK_LIMIT &&
 	  fault_addr <= PHYS_BASE && f->esp <= PHYS_BASE) {
-	  uint8_t *stack_ptr1= (uint8_t*)(((unsigned)(fault_addr)) / PGSIZE * PGSIZE) + PGSIZE;
-	  uint8_t *stack_ptr2= (uint8_t*)(((unsigned)(f->esp)) / PGSIZE * PGSIZE) + PGSIZE;
+	  uint8_t *stack_ptr1= pg_round_down(fault_addr) + PGSIZE;
+	  uint8_t *stack_ptr2= pg_round_down(f->esp) + PGSIZE;
 	  uint8_t *stack_ptr = stack_ptr1 > stack_ptr2 ? stack_ptr1 : stack_ptr2;
 
 	  while (stack_ptr > f->esp || stack_ptr > fault_addr) {

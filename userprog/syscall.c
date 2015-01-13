@@ -56,9 +56,9 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 	if (uaddr >= PHYS_BASE) return false;
 
 	if (write &&
-		frame_find_upage(&thread_current()  -> frame_table, (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)) &&
+		frame_find_upage(&thread_current()  -> frame_table, pg_round_down(uaddr)) &&
 		!hash_entry(frame_find_upage(&thread_current()  -> frame_table,
-					(uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE)), struct frame_entry, all_elem) -> writable)
+					pg_round_down(uaddr)), struct frame_entry, all_elem) -> writable)
 		return false;
 
 	if (pagedir_get_page(thread_current()->pagedir, uaddr) != NULL)
@@ -66,7 +66,7 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 
 	struct supp_page_entry *e = NULL;
 	if (e = supp_page_find(&thread_current() -> supp_page_table, uaddr)) {
-		uint8_t *fault_page = (uint8_t*)((unsigned)uaddr / PGSIZE * PGSIZE);
+		uint8_t *fault_page = pg_round_down(uaddr);
 		/* Lazy Loading of Segments */
 		if (e -> is_segment) {
 			uint8_t *frm = frame_get_page(&thread_current() -> frame_table, fault_page,
@@ -110,8 +110,8 @@ is_valid_user_addr (const uint8_t *uaddr, bool write)
 		uaddr >= thread_current() -> esp) {
 		/* Stack growth. */
 		bool success = false;
-		uint8_t *stack_ptr1= (uint8_t*)(((unsigned)(uaddr)) / PGSIZE * PGSIZE) + PGSIZE;
-		uint8_t *stack_ptr2= (uint8_t*)(((unsigned)(thread_current()->esp)) / PGSIZE * PGSIZE) + PGSIZE;
+		uint8_t *stack_ptr1= pg_round_down(uaddr) + PGSIZE;
+		uint8_t *stack_ptr2= pg_round_down(thread_current()->esp) + PGSIZE;
 		uint8_t *stack_ptr = stack_ptr1 > stack_ptr2 ? stack_ptr1 : stack_ptr2;
 
 		while (stack_ptr > thread_current()->esp || stack_ptr > uaddr) {
@@ -279,10 +279,10 @@ create_handler (const char *file_name, unsigned initial_size)
 		!is_valid_user_addr(file_name+(strlen(file_name) ? strlen(file_name)-1 : 0), false))
 		exit_handler(-1);
 
-	uint8_t *buf = (uint8_t*)((unsigned)file_name / PGSIZE * PGSIZE);
+	uint8_t *buf = pg_round_down(file_name);
 	is_valid_user_addr(buf, true);
 	struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
-			(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE));
+			pg_round_down(buf));
 	if (h)
 		hash_entry(h, struct frame_entry, all_elem) -> pinned = true;
 
@@ -417,14 +417,14 @@ write_handler (int fd, const void *buffer, unsigned size)
 			return -1;
 		}
 
-		uint8_t *buf = (uint8_t*)((unsigned)buffer / PGSIZE * PGSIZE);
+		uint8_t *buf = pg_round_down(buffer);
 		int size_left = (size + PGSIZE - 1) / PGSIZE * PGSIZE + (size % PGSIZE == 0 ? PGSIZE : 0),
 			buf_ptr = 0;
 
 		while (size_left > 0) {
 			if (is_valid_user_addr(buf + buf_ptr, true)) {
 				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
-										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+										pg_round_down(buf) + buf_ptr);
 				if (h)
 					hash_entry(h, struct frame_entry, all_elem) -> pinned = true;
 			}
@@ -441,7 +441,7 @@ write_handler (int fd, const void *buffer, unsigned size)
 		while (size_left > 0) {
 			if (is_valid_user_addr(buf + buf_ptr, true)) {
 				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
-										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+										pg_round_down(buf) + buf_ptr);
 				if (h)
 					hash_entry(h, struct frame_entry, all_elem) -> pinned = false;
 			}
@@ -465,7 +465,7 @@ read_handler (int fd, void *buffer, unsigned size)
 		exit_handler(-1);
 
 	int bytes_read = 0;
-	uint8_t *buf = (uint8_t*)((unsigned)buffer / PGSIZE * PGSIZE);
+	uint8_t *buf = pg_round_down(buffer);
 	if (fd == 0) {
 		input_init();
 		while (size > 0) {
@@ -489,7 +489,7 @@ read_handler (int fd, void *buffer, unsigned size)
 		while (size_left > 0) {
 			if (is_valid_user_addr(buf + buf_ptr, true)) {
 				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
-										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+										pg_round_down(buf) + buf_ptr);
 				if (h)
 					hash_entry(h, struct frame_entry, all_elem) -> pinned = true;
 			}
@@ -506,7 +506,7 @@ read_handler (int fd, void *buffer, unsigned size)
 		while (size_left > 0) {
 			if (is_valid_user_addr(buf + buf_ptr, true)) {
 				struct hash_elem *h = frame_find_upage(&thread_current() -> frame_table,
-										(uint8_t*)((unsigned)buf/PGSIZE*PGSIZE) + buf_ptr);
+										pg_round_down(buf) + buf_ptr);
 				if (h)
 					hash_entry(h, struct frame_entry, all_elem) -> pinned = false;
 			}
@@ -528,7 +528,8 @@ exec_handler (const char *cmd_line)
 		!is_valid_user_addr(cmd_line+(strlen(cmd_line) ? strlen(cmd_line)-1 : 0), false))
 		exit_handler(-1);
 
-	return process_execute(cmd_line);
+	pid_t ret = process_execute(cmd_line);
+	return ret;
 }
 
 static int
