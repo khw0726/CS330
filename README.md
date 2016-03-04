@@ -1,5 +1,8 @@
-# README #
+# Pintos project
 
-clone ->  **CHMOD** -> submit
-chmod u+x test/make-grade
-chmod u+x utils/pintos
+- Project1 Thread [OK]
+- Project2 Userprog. [OK]
+- Project3 VM. [almost OK]
+- Project4 FS. [X]
+
+Read documents in documents/ directory for detailed information.
